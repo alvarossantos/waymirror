@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 from collections.abc import Callable, Mapping
@@ -49,7 +50,7 @@ def _default_run(cmd: list[str]) -> str:
 
 
 def _default_exists(path: str) -> bool:
-    return shutil.which(path) is not None
+    return os.path.exists(path) or shutil.which(path) is not None
 
 
 def _env_has_session(env: Mapping[str, str], name: str) -> bool:
@@ -83,6 +84,11 @@ def detect_backend(
     Explicit request wins. Auto detection is session-aware: session signals take
     priority over binary presence fallback. All command execution goes through
     the injected runner for testability.
+
+    Policy: when a session signal identifies a backend but that backend is
+    unusable, detection hard-fails with NoBackendError and does not fall back to
+    another backend. This prevents wrong-backend selection in stale/ambiguous
+    environments.
     """
     from .niri import NiriBackend
     from .umbriel import UmbrielBackend
@@ -108,7 +114,7 @@ def detect_backend(
             backend = builders[name]()
             backend.list_outputs()
             return backend
-        except Exception as exc:  # noqa: BLE001 - detection probes backends
+        except (BackendError, OSError, ValueError) as exc:
             errors.append(f"{name}: {exc}")
             return None
 
@@ -119,20 +125,21 @@ def detect_backend(
         found = try_backend("niri")
         if found is not None:
             return found
-    if umbriel_signal and not niri_signal:
+        # Signaled backend unusable: hard fail, no cross-backend fallback.
+    elif umbriel_signal and not niri_signal:
         found = try_backend("umbriel")
         if found is not None:
             return found
-    if niri_signal and umbriel_signal:
-        # Both signaled - prefer niri? Spec says session signal priority over binary presence;
-        # ambiguous dual signal is unlikely; try niri then umbriel deterministically.
+        # Signaled backend unusable: hard fail, no cross-backend fallback.
+    elif niri_signal and umbriel_signal:
+        # Ambiguous dual signal: try only signaled backends deterministically.
         for name in ("niri", "umbriel"):
             found = try_backend(name)
             if found is not None:
                 return found
-
-    # No session signal or signaled backend failed: fallback try niri then umbriel.
-    if not niri_signal and not umbriel_signal:
+        # Both signaled backends unusable: hard fail.
+    else:
+        # No session signal: fallback try niri then umbriel.
         for name in ("niri", "umbriel"):
             found = try_backend(name)
             if found is not None:

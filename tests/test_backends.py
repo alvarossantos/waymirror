@@ -105,6 +105,61 @@ def test_detect_no_backend_raises():
         detect_backend("auto", env={}, run=fake_run, exists=lambda p: False)
 
 
+def test_detect_auto_niri_socket_path_uses_default_exists(tmp_path):
+    socket_path = tmp_path / "niri.sock"
+    socket_path.write_text("")
+
+    def fake_run(cmd):
+        if cmd[:3] == ["niri", "msg", "--json"]:
+            return (FIXTURES / "niri_outputs.json").read_text()
+        raise AssertionError(f"unexpected {cmd}")
+
+    b = detect_backend("auto", env={"NIRI_SOCKET": str(socket_path)}, run=fake_run)
+    assert b.name == "niri"
+
+
+def test_detect_signaled_backend_failure_hard_fails_no_fallback():
+    calls = []
+
+    def fake_run(cmd):
+        calls.append(cmd[0])
+        if cmd[0] == "niri":
+            raise BackendError("niri broken")
+        if cmd[0] == "umbriel":
+            return (FIXTURES / "umbriel_outputs.json").read_text()
+        raise AssertionError(cmd)
+
+    with pytest.raises(NoBackendError) as excinfo:
+        detect_backend(
+            "auto",
+            env={"NIRI_SOCKET": "/tmp/niri.sock", "XDG_CURRENT_DESKTOP": "niri"},
+            run=fake_run,
+            exists=lambda p: True,
+        )
+
+    assert calls == ["niri"]
+    assert "niri: niri broken" in str(excinfo.value)
+
+
+def test_detect_probe_handles_command_and_json_like_failures():
+    calls = []
+
+    def fake_run(cmd):
+        calls.append(cmd[0])
+        if cmd[0] == "niri":
+            raise ValueError("invalid json")
+        if cmd[0] == "umbriel":
+            raise OSError("command failed")
+        raise AssertionError(cmd)
+
+    with pytest.raises(NoBackendError) as excinfo:
+        detect_backend("auto", env={}, run=fake_run, exists=lambda p: False)
+
+    assert calls == ["niri", "umbriel"]
+    assert "niri: invalid json" in str(excinfo.value)
+    assert "umbriel: command failed" in str(excinfo.value)
+
+
 def test_niri_parser_handles_list_shape():
     data = json.dumps(
         [
