@@ -1,0 +1,472 @@
+"""GTK4/libadwaita GUI for waymirror."""
+
+from __future__ import annotations
+
+import logging
+import os
+import sys
+import threading
+from pathlib import Path
+from typing import Any
+
+from .backends.base import BackendError, NoBackendError, detect_backend
+from .mirror import MirrorManager, MirrorStopError, MirrorValidationError, OutputNotFoundError, WlMirrorMissingError
+from .models import MirrorMode, Output
+from .preview import PreviewManager
+from .state import StateStore
+
+logger = logging.getLogger(__name__)
+
+_GTK_AVAILABLE = False
+_GTK_IMPORT_ERROR: Exception | None = None
+
+try:  # pragma: no cover - depends on system GI
+    import gi
+
+    gi.require_version("Gtk", "4.0")
+    gi.require_version("Adw", "1")
+    from gi.repository import Adw, Gdk, GLib, Gtk
+
+    _GTK_AVAILABLE = True
+except Exception as exc:  # pragma: no cover - depends on system GI
+    Adw = None  # type: ignore[assignment]
+    Gdk = None  # type: ignore[assignment]
+    GLib = None  # type: ignore[assignment]
+    Gtk = None  # type: ignore[assignment]
+    _GTK_IMPORT_ERROR = exc
+
+
+def default_state_path() -> Path:
+    runtime = os.environ.get("XDG_RUNTIME_DIR")
+    if runtime:
+        return Path(runtime) / "waymirror" / "state.json"
+    return Path("/tmp") / f"waymirror-{os.getuid()}" / "state.json"
+
+
+def default_runtime_dir() -> Path:
+    runtime = os.environ.get("XDG_RUNTIME_DIR")
+    if runtime:
+        return Path(runtime)
+    return Path("/tmp") / f"waymirror-{os.getuid()}"
+
+
+def _format_output_label(output: Output) -> str:
+    size = f"{output.width}x{output.height}" if output.width and output.height else "unknown"
+    rate = f"@{output.refresh_hz:g}Hz" if output.refresh_hz else ""
+    desc = output.description or " ".join(part for part in [output.make, output.model] if part)
+    details = f"{size}{rate}"
+    if desc:
+        details += f" - {desc}"
+    return f"{output.name} ({details})"
+
+
+if _GTK_AVAILABLE:
+
+    class OutputCard(Gtk.Box):
+        def __init__(self, output: Output) -> None:
+            super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+            self.output = output
+            self.add_css_class("card")
+            self.set_margin_top(6)
+            self.set_margin_bottom(6)
+            self.set_margin_start(6)
+            self.set_margin_end(6)
+
+            self.picture = Gtk.Picture()
+            self.picture.set_size_request(320, 180)
+            self.picture.set_can_shrink(True)
+            self.picture.set_content_fit(Gtk.ContentFit.CONTAIN)
+            self.picture.set_hexpand(True)
+            self.picture.set_vexpand(True)
+
+            self.name_label = Gtk.Label(label=output.name)
+            self.name_label.add_css_class("heading")
+            self.name_label.set_halign(Gtk.Align.START)
+
+            size = f"{output.width}x{output.height}" if output.width and output.height else "unknown"
+            rate = f"@{output.refresh_hz:g}Hz" if output.refresh_hz else ""
+            self.meta_label = Gtk.Label(label=f"{size}{rate}")
+            self.meta_label.set_halign(Gtk.Align.START)
+            self.meta_label.add_css_class("dim-label")
+
+            desc = output.description or " ".join(part for part in [output.make, output.model] if part).strip()
+            self.desc_label = Gtk.Label(label=desc or " ")
+            self.desc_label.set_halign(Gtk.Align.START)
+            self.desc_label.set_wrap(True)
+            self.desc_label.set_xalign(0)
+            self.desc_label.add_css_class("dim-label")
+
+            self.error_label = Gtk.Label(label="")
+            self.error_label.set_halign(Gtk.Align.START)
+            self.error_label.set_wrap(True)
+            self.error_label.set_xalign(0)
+            self.error_label.add_css_class("error")
+
+            self.append(self.picture)
+            self.append(self.name_label)
+            self.append(self.meta_label)
+            self.append(self.desc_label)
+            self.append(self.error_label)
+
+        def set_preview(self, path: Path | None, error: str | None) -> None:
+            if path is not None and path.exists():
+                try:
+                    texture = Gdk.Texture.new_from_filename(str(path))
+                except Exception:
+                    texture = None
+                if texture is not None:
+                    self.picture.set_paintable(texture)
+            if error:
+                self.error_label.set_text(error)
+                self.error_label.set_visible(True)
+            else:
+                self.error_label.set_text("")
+                self.error_label.set_visible(False)
+
+
+    class WaymirrorWindow(Adw.ApplicationWindow):
+        def __init__(
+            self,
+            app: Adw.Application,
+            *,
+            backend_name: str = "auto",
+            state_store: StateStore | None = None,
+            preview_manager: PreviewManager | None = None,
+            mirror_manager: MirrorManager | None = None,
+        ) -> None:
+            super().__init__(application=app)
+            self.set_title("Waymirror")
+            self.set_default_size(1000, 700)
+
+            self.backend_name = backend_name
+            self.backend = None
+            self.outputs: list[Output] = []
+            self.cards: dict[str, OutputCard] = {}
+            self.preview_paths: dict[str, Path | None] = {}
+            self._refresh_pending = False
+            self._preview_inflight = False
+            self._refresh_timer_id: int | None = None
+            self._closed = False
+
+            self.state_store = state_store or StateStore(default_state_path())
+            self.preview_manager = preview_manager or PreviewManager(default_runtime_dir())
+            self.mirror_manager = mirror_manager or MirrorManager(self.state_store)
+
+            self._build_ui()
+            self.connect("map", lambda *_: self._ensure_refresh_timer())
+            self.connect("unmap", lambda *_: self._stop_refresh_timer())
+            self.connect("close-request", self._on_close_request)
+
+            self._load_outputs()
+            self._refresh_status()
+            self._ensure_refresh_timer()
+
+        def _build_ui(self) -> None:
+            toolbar = Adw.ToolbarView()
+            header = Adw.HeaderBar()
+            title_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+            title = Gtk.Label(label="Waymirror")
+            title.add_css_class("title")
+            subtitle = Gtk.Label(label="Wayland screen mirroring")
+            subtitle.add_css_class("dim-label")
+            title_box.append(title)
+            title_box.append(subtitle)
+            header.set_title_widget(title_box)
+            toolbar.add_top_bar(header)
+
+            content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+            content.set_margin_top(12)
+            content.set_margin_bottom(12)
+            content.set_margin_start(12)
+            content.set_margin_end(12)
+
+            self.banner = Adw.Banner(title="")
+            self.banner.set_revealed(False)
+            content.append(self.banner)
+
+            controls = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+            controls.set_halign(Gtk.Align.FILL)
+
+            self.source_model = Gtk.StringList()
+            self.source_dropdown = Gtk.DropDown(model=self.source_model)
+            self.source_dropdown.set_hexpand(True)
+            self.source_dropdown.connect("notify::selected", lambda *_: self._update_target_sensitivity())
+
+            self.mode_model = Gtk.StringList.new(["Window", "Fullscreen"])
+            self.mode_dropdown = Gtk.DropDown(model=self.mode_model)
+            self.mode_dropdown.connect("notify::selected", lambda *_: self._update_target_sensitivity())
+
+            self.target_model = Gtk.StringList()
+            self.target_dropdown = Gtk.DropDown(model=self.target_model)
+            self.target_dropdown.set_hexpand(True)
+
+            self.start_stop_button = Gtk.Button(label="Start")
+            self.start_stop_button.add_css_class("suggested-action")
+            self.start_stop_button.connect("clicked", lambda *_: self._on_start_stop())
+
+            controls.append(Gtk.Label(label="Source"))
+            controls.append(self.source_dropdown)
+            controls.append(Gtk.Label(label="Mode"))
+            controls.append(self.mode_dropdown)
+            controls.append(Gtk.Label(label="Target"))
+            controls.append(self.target_dropdown)
+            controls.append(self.start_stop_button)
+            content.append(controls)
+
+            scrolled = Gtk.ScrolledWindow()
+            scrolled.set_vexpand(True)
+            scrolled.set_hexpand(True)
+            self.flow = Gtk.FlowBox()
+            self.flow.set_valign(Gtk.Align.START)
+            self.flow.set_max_children_per_line(4)
+            self.flow.set_selection_mode(Gtk.SelectionMode.NONE)
+            scrolled.set_child(self.flow)
+            content.append(scrolled)
+
+            toolbar.set_content(content)
+            self.set_content(toolbar)
+            self._update_target_sensitivity()
+
+        def _show_error(self, message: str) -> None:
+            self.banner.set_title(message)
+            self.banner.set_revealed(bool(message))
+
+        def _clear_error(self) -> None:
+            self.banner.set_title("")
+            self.banner.set_revealed(False)
+
+        def _load_outputs(self) -> None:
+            try:
+                self.backend = detect_backend(self.backend_name)
+                self.outputs = self.backend.list_outputs()
+                self._clear_error()
+            except (NoBackendError, BackendError) as exc:
+                self.backend = None
+                self.outputs = []
+                self._show_error(str(exc))
+            except Exception as exc:  # noqa: BLE001 - GUI must stay alive
+                self.backend = None
+                self.outputs = []
+                self._show_error(f"Failed to load outputs: {exc}")
+            self._rebuild_outputs_ui()
+
+        def _rebuild_outputs_ui(self) -> None:
+            while True:
+                child = self.flow.get_first_child()
+                if child is None:
+                    break
+                self.flow.remove(child)
+            self.cards.clear()
+
+            self.source_model.splice(0, self.source_model.get_n_items(), [o.name for o in self.outputs])
+            self.target_model.splice(0, self.target_model.get_n_items(), [o.name for o in self.outputs])
+
+            for output in self.outputs:
+                card = OutputCard(output)
+                self.cards[output.name] = card
+                self.flow.append(card)
+
+            if self.outputs:
+                if self.source_dropdown.get_selected() == Gtk.INVALID_LIST_POSITION:
+                    self.source_dropdown.set_selected(0)
+                if self.target_dropdown.get_selected() == Gtk.INVALID_LIST_POSITION:
+                    # Prefer a different target than source when possible.
+                    self.target_dropdown.set_selected(1 if len(self.outputs) > 1 else 0)
+            self._update_target_sensitivity()
+
+        def _selected_source(self) -> str | None:
+            idx = self.source_dropdown.get_selected()
+            if idx == Gtk.INVALID_LIST_POSITION or idx < 0 or idx >= len(self.outputs):
+                return None
+            return self.outputs[idx].name
+
+        def _selected_target(self) -> str | None:
+            idx = self.target_dropdown.get_selected()
+            if idx == Gtk.INVALID_LIST_POSITION or idx < 0 or idx >= len(self.outputs):
+                return None
+            return self.outputs[idx].name
+
+        def _selected_mode(self) -> MirrorMode:
+            return "fullscreen" if self.mode_dropdown.get_selected() == 1 else "window"
+
+        def _update_target_sensitivity(self) -> None:
+            fullscreen = self._selected_mode() == "fullscreen"
+            self.target_dropdown.set_sensitive(fullscreen and len(self.outputs) > 1)
+
+        def _refresh_status(self) -> None:
+            try:
+                result = self.mirror_manager.status()
+            except Exception as exc:  # noqa: BLE001
+                self._show_error(f"Status error: {exc}")
+                return
+            if result.warning:
+                self._show_error(result.warning)
+            if result.active and result.session is not None:
+                self.start_stop_button.set_label("Stop")
+                self.start_stop_button.remove_css_class("suggested-action")
+                self.start_stop_button.add_css_class("destructive-action")
+            else:
+                self.start_stop_button.set_label("Start")
+                self.start_stop_button.remove_css_class("destructive-action")
+                self.start_stop_button.add_css_class("suggested-action")
+
+        def _on_start_stop(self) -> None:
+            try:
+                status = self.mirror_manager.status()
+            except Exception as exc:  # noqa: BLE001
+                self._show_error(f"Status error: {exc}")
+                return
+
+            if status.active and status.session is not None:
+                try:
+                    result = self.mirror_manager.stop()
+                except (MirrorStopError, Exception) as exc:  # noqa: BLE001
+                    self._show_error(str(exc))
+                    self._refresh_status()
+                    return
+                if result.warning:
+                    self._show_error(result.warning)
+                else:
+                    self._clear_error()
+                self._refresh_status()
+                return
+
+            source = self._selected_source()
+            if not source:
+                self._show_error("Select a source output")
+                return
+            mode = self._selected_mode()
+            target = self._selected_target() if mode == "fullscreen" else None
+            if mode == "fullscreen" and not target:
+                self._show_error("Select a target output for fullscreen mode")
+                return
+            backend_name = self.backend.name if self.backend is not None else self.backend_name
+            available = [o.name for o in self.outputs]
+            try:
+                result = self.mirror_manager.start(
+                    backend_name,
+                    source,
+                    mode,
+                    target,
+                    available_outputs=available,
+                )
+            except (OutputNotFoundError, MirrorValidationError, WlMirrorMissingError, MirrorStopError, Exception) as exc:  # noqa: BLE001
+                self._show_error(str(exc))
+                self._refresh_status()
+                return
+            if result.warning:
+                self._show_error(result.warning)
+            else:
+                self._clear_error()
+            self._refresh_status()
+
+        def _ensure_refresh_timer(self) -> None:
+            if self._closed or self._refresh_timer_id is not None:
+                return
+            if not self.get_mapped():
+                return
+            self._refresh_timer_id = GLib.timeout_add(500, self._on_refresh_tick)
+
+        def _stop_refresh_timer(self) -> None:
+            if self._refresh_timer_id is not None:
+                GLib.source_remove(self._refresh_timer_id)
+                self._refresh_timer_id = None
+
+        def _on_refresh_tick(self) -> bool:
+            if self._closed or not self.get_mapped():
+                self._refresh_timer_id = None
+                return False
+            self._refresh_status()
+            self._schedule_preview_refresh()
+            return True
+
+        def _schedule_preview_refresh(self) -> None:
+            if self._refresh_pending or self._preview_inflight or not self.outputs:
+                return
+            self._refresh_pending = True
+            self._preview_inflight = True
+            output_names = [o.name for o in self.outputs]
+            preview_manager = self.preview_manager
+
+            def worker() -> None:
+                results: dict[str, tuple[Path | None, str | None]] = {}
+                for name in output_names:
+                    try:
+                        path = preview_manager.capture(name)
+                        err = preview_manager.errors.get(name)
+                    except Exception as exc:  # noqa: BLE001
+                        path = None
+                        err = str(exc)
+                    results[name] = (path, err)
+                GLib.idle_add(self._apply_preview_results, results)
+
+            threading.Thread(target=worker, daemon=True).start()
+
+        def _apply_preview_results(self, results: dict[str, tuple[Path | None, str | None]]) -> bool:
+            self._refresh_pending = False
+            self._preview_inflight = False
+            if self._closed:
+                return False
+            for name, (path, err) in results.items():
+                self.preview_paths[name] = path
+                card = self.cards.get(name)
+                if card is not None:
+                    card.set_preview(path, err)
+            return False
+
+        def _on_close_request(self, *_args: Any) -> bool:
+            self._closed = True
+            self._stop_refresh_timer()
+            try:
+                self.preview_manager.clear()
+            except Exception:  # noqa: BLE001
+                logger.exception("failed to clear previews on close")
+            return False
+
+
+    class WaymirrorApp(Adw.Application):
+        def __init__(self, backend_name: str = "auto") -> None:
+            super().__init__(application_id="io.github.waymirror.Waymirror")
+            self.backend_name = backend_name
+            self.window: WaymirrorWindow | None = None
+
+        def do_activate(self) -> None:  # noqa: N802 - GTK API
+            if self.window is None:
+                self.window = WaymirrorWindow(self, backend_name=self.backend_name)
+            self.window.present()
+
+else:
+
+    class WaymirrorApp:  # type: ignore[no-redef]
+        """Placeholder when GTK dependencies are unavailable."""
+
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            raise RuntimeError(f"GTK4/libadwaita unavailable: {_GTK_IMPORT_ERROR}")
+
+
+def main_gui(argv: list[str] | None = None) -> int:
+    """Launch the GTK GUI. Returns process-style exit code."""
+    if not _GTK_AVAILABLE:
+        message = f"GTK4/libadwaita unavailable: {_GTK_IMPORT_ERROR}"
+        print(message, file=sys.stderr)
+        return 1
+
+    backend_name = "auto"
+    args = list(argv) if argv is not None else []
+    # Minimal argv handling: allow --backend <name> when launched from CLI.
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg == "--backend" and i + 1 < len(args):
+            backend_name = args[i + 1]
+            i += 2
+            continue
+        if arg.startswith("--backend="):
+            backend_name = arg.split("=", 1)[1]
+            i += 1
+            continue
+        i += 1
+
+    app = WaymirrorApp(backend_name=backend_name)
+    # Do not forward custom args to GTK; GTK expects its own argv.
+    return int(app.run([]))

@@ -274,15 +274,22 @@ def main(argv: Sequence[str] | None = None) -> int:
         return EXIT_USAGE
 
     handler = getattr(args, "_handler", None)
-    if handler is None:
-        parser.print_help()
-        return 0
+    command = getattr(args, "command", None)
 
     # Additional validation required by spec
-    command = getattr(args, "command", None)
     if command in ("start", "toggle"):
         if args.mode == "fullscreen" and not args.target:
             return _usage_error("--target is required when --mode fullscreen")
+
+    if handler is None:
+        # Root command launches GUI; lazy import keeps GTK out of headless CLI paths.
+        from .app import main_gui
+
+        gui_argv: list[str] = []
+        backend = getattr(args, "backend", "auto")
+        if backend and backend != "auto":
+            gui_argv.extend(["--backend", str(backend)])
+        return int(main_gui(gui_argv))
 
     try:
         return int(handler(args))
