@@ -123,3 +123,20 @@ def test_clear_removes_preview_contents(tmp_path):
 
     assert previews.exists()
     assert list(previews.iterdir()) == []
+
+
+def test_clear_unlinks_symlink_to_directory_without_touching_target(tmp_path):
+    previews = tmp_path / "waymirror" / "previews"
+    previews.mkdir(parents=True)
+    target = tmp_path / "elsewhere"
+    target.mkdir()
+    (target / "keep.txt").write_text("keep", encoding="utf-8")
+    link = previews / "linked"
+    link.symlink_to(target, target_is_directory=True)
+
+    mgr = PreviewManager(tmp_path, runner=failing_runner)
+    mgr.clear()
+
+    assert not link.is_symlink()
+    assert list(previews.iterdir()) == []
+    assert (target / "keep.txt").read_text(encoding="utf-8") == "keep"

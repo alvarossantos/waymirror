@@ -107,7 +107,9 @@ class PreviewManager:
         try:
             for child in directory.iterdir():
                 try:
-                    if child.is_dir():
+                    # Check symlinks first: is_dir() follows them and would traverse
+                    # outside the previews directory.
+                    if not child.is_symlink() and child.is_dir():
                         # previews dir should only contain files, but be defensive
                         for sub in child.rglob("*"):
                             if sub.is_file() or sub.is_symlink():

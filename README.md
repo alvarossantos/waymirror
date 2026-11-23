@@ -38,6 +38,19 @@ python -m venv --system-site-packages .venv
 .venv/bin/python -m pip install -e .
 ```
 
+The editable install places the `waymirror` console script in `.venv/bin`, which
+is not on PATH. Link it into `~/.local/bin` so the desktop entry and the commands
+below can find it:
+
+```bash
+mkdir -p "$HOME/.local/bin"
+ln -sf "$PWD/.venv/bin/waymirror" "$HOME/.local/bin/waymirror"
+```
+
+If `$HOME/.local/bin` is not already on your PATH, add
+`export PATH="$HOME/.local/bin:$PATH"` to your shell profile and restart the
+session.
+
 For running the test suite, install the dev extra:
 
 ```bash
@@ -55,11 +68,13 @@ install -Dm644 resources/io.github.alvaro.waymirror.desktop \
 ## Usage
 
 Launch the GUI (no arguments) and pick a source output, a mode, and — for
-fullscreen — a target output:
+fullscreen — a target output. The commands below assume the `~/.local/bin`
+symlink from Install is on PATH; without it, replace `waymirror` with
+`.venv/bin/python -m waymirror`:
 
 ```bash
 waymirror
-python -m waymirror          # equivalent, no console script needed
+.venv/bin/python -m waymirror  # equivalent, no console script needed
 waymirror --help
 waymirror --version
 ```
@@ -84,8 +99,8 @@ a different active config. `stop` signals only the PID recorded in state; stale 
 corrupt state is cleared safely. Select the compositor explicitly with
 `--backend auto|niri|umbriel` before the subcommand (default: `auto`, which uses
 session signals first). Exit codes: `0` success, `2` usage error, `3` no supported
-backend, `4` output not found, `5` execution failure (for example missing
-`wl-mirror`).
+backend, `4` output not found, `5` execution failure (missing `wl-mirror`, failed
+stop, or an unexpected internal error).
 
 Preview snapshots live under `$XDG_RUNTIME_DIR/waymirror/previews/` and are
 captured with `grim -o <output>` at roughly 2 fps while the GUI is visible.

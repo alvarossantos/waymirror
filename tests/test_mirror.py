@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 import pytest
 
-from waymirror.mirror import MirrorManager, WlMirrorMissingError, build_wl_mirror_cmd
+from waymirror.mirror import MirrorManager, MirrorStopError, WlMirrorMissingError, build_wl_mirror_cmd
 from waymirror.models import MirrorSession
 from waymirror.state import StateStore
 
@@ -209,3 +209,20 @@ def test_stop_clears_invalid_state_file(tmp_path):
     res = mgr.stop()
     assert res.action == 'stale_cleared'
     assert not store.path.exists()
+
+
+def test_default_waiter_honors_injected_pid_alive(tmp_path):
+    # The real pid is dead, but the injected predicate says it stays alive:
+    # the default waiter must therefore report a stop timeout.
+    store = StateStore(tmp_path / "state.json")
+    mgr = MirrorManager(
+        store,
+        runner=FakeRunner(),
+        pid_alive=lambda pid: True,
+        now=lambda: "2026-01-01T00:00:00Z",
+        killer=lambda pid, sig: None,
+    )
+    store.save(MirrorSession("niri", "eDP-2", "window", None, 2_000_000_000, "t"))
+
+    with pytest.raises(MirrorStopError):
+        mgr.stop()

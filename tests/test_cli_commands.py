@@ -3,12 +3,14 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
 import waymirror.cli as cli
 from waymirror.backends.base import BackendError, NoBackendError
 from waymirror.mirror import (
+    MirrorError,
     MirrorStopError,
     MirrorValidationError,
     OutputNotFoundError,
@@ -18,6 +20,8 @@ from waymirror.mirror import (
     WlMirrorMissingError,
 )
 from waymirror.models import MirrorSession, Output
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 class FakeBackend:
@@ -95,7 +99,7 @@ def test_start_requires_target_for_fullscreen():
         [sys.executable, "-m", "waymirror", "start", "--source", "eDP-2", "--mode", "fullscreen"],
         capture_output=True,
         text=True,
-        cwd="/home/alvaro/Projects/waymirror",
+        cwd=str(REPO_ROOT),
     )
     assert r.returncode == 2
 
@@ -226,6 +230,22 @@ def test_wl_mirror_missing_maps_to_exit_5(monkeypatch):
 def test_stop_kill_failure_maps_to_exit_5(monkeypatch):
     manager = FakeManager(stop_result=MirrorStopError("wl-mirror pid 123 did not exit after SIGTERM"))
     install_fake_runtime(monkeypatch, manager=manager)
+    rc = cli.main(["stop"])
+    assert rc == 5
+
+
+def test_base_mirror_error_maps_to_exit_5(monkeypatch):
+    manager = FakeManager(start_result=MirrorError("wl-mirror runner returned invalid pid"))
+    install_fake_runtime(monkeypatch, manager=manager)
+
+    rc = cli.main(["start", "--source", "eDP-2", "--mode", "window"])
+    assert rc == 5
+
+
+def test_unexpected_error_maps_to_exit_5(monkeypatch):
+    manager = FakeManager(stop_result=RuntimeError("unexpected failure"))
+    install_fake_runtime(monkeypatch, manager=manager)
+
     rc = cli.main(["stop"])
     assert rc == 5
 

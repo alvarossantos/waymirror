@@ -445,7 +445,7 @@ if _GTK_AVAILABLE:
 
     class WaymirrorApp(Adw.Application):
         def __init__(self, backend_name: str = "auto") -> None:
-            super().__init__(application_id="io.github.waymirror.Waymirror")
+            super().__init__(application_id="io.github.alvaro.waymirror")
             self.backend_name = backend_name
             self.window: WaymirrorWindow | None = None
 

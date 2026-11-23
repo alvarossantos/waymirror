@@ -37,7 +37,7 @@ def default_state_path() -> Path:
     return Path("/tmp") / f"waymirror-{os.getuid()}" / "state.json"
 
 
-def _emit(text: str, *, json_mode: bool, err: bool = False) -> None:
+def _emit(text: str, *, err: bool = False) -> None:
     stream = sys.stderr if err else sys.stdout
     if text:
         stream.write(text if text.endswith("\n") else text + "\n")
@@ -58,11 +58,10 @@ def _cmd_list(args: argparse.Namespace) -> int:
                     "outputs": [o.to_dict() for o in outputs],
                 }
             ),
-            json_mode=True,
         )
     else:
         if not outputs:
-            _emit("No outputs found.", json_mode=False)
+            _emit("No outputs found.")
         for o in outputs:
             desc = f" {o.description}" if o.description else ""
             size = f"{o.width}x{o.height}" if o.width and o.height else "unknown"
@@ -73,11 +72,11 @@ def _cmd_list(args: argparse.Namespace) -> int:
             if not o.enabled:
                 flags.append("disabled")
             suffix = f" [{' '.join(flags)}]" if flags else ""
-            _emit(f"{o.name}\t{size}{rate}{desc}{suffix}", json_mode=False)
+            _emit(f"{o.name}\t{size}{rate}{desc}{suffix}")
     return 0
 
 
-def _format_session(session) -> dict:
+def _format_session(session) -> dict | None:
     if session is None:
         return None
     return session.to_dict()
@@ -93,18 +92,17 @@ def _cmd_status(args: argparse.Namespace) -> int:
         }
         if result.warning:
             payload["warning"] = result.warning
-        _emit(_json_dump(payload), json_mode=True)
+        _emit(_json_dump(payload))
     else:
         if result.warning:
-            _emit(f"Warning: {result.warning}", json_mode=False, err=True)
+            _emit(f"Warning: {result.warning}", err=True)
         if not result.active or result.session is None:
-            _emit("inactive", json_mode=False)
+            _emit("inactive")
         else:
             s = result.session
             target = f" -> {s.target}" if s.target else ""
             _emit(
                 f"active backend={s.backend} source={s.source} mode={s.mode}{target} pid={s.pid}",
-                json_mode=False,
             )
     return 0
 
@@ -126,15 +124,14 @@ def _cmd_start(args: argparse.Namespace) -> int:
         available_outputs=available,
     )
     if result.warning:
-        _emit(f"Warning: {result.warning}", json_mode=False, err=True)
+        _emit(f"Warning: {result.warning}", err=True)
     if result.session is None:
-        _emit(result.action, json_mode=False)
+        _emit(result.action)
     else:
         s = result.session
         target = f" -> {s.target}" if s.target else ""
         _emit(
             f"{result.action}: {s.source} [{s.mode}{target}] pid={s.pid} backend={s.backend}",
-            json_mode=False,
         )
     return 0
 
@@ -143,13 +140,13 @@ def _cmd_stop(args: argparse.Namespace) -> int:
     manager = MirrorManager(StateStore(default_state_path()))
     result: StopResult = manager.stop()
     if result.warning:
-        _emit(f"Warning: {result.warning}", json_mode=False, err=True)
+        _emit(f"Warning: {result.warning}", err=True)
     if result.action == "not_running":
-        _emit("not running", json_mode=False)
+        _emit("not running")
     elif result.action == "stale_cleared":
-        _emit("stale state cleared", json_mode=False)
+        _emit("stale state cleared")
     else:
-        _emit("stopped", json_mode=False)
+        _emit("stopped")
     return 0
 
 
@@ -166,21 +163,20 @@ def _cmd_toggle(args: argparse.Namespace) -> int:
     )
     warning = getattr(result, "warning", None)
     if warning:
-        _emit(f"Warning: {warning}", json_mode=False, err=True)
+        _emit(f"Warning: {warning}", err=True)
     if isinstance(result, StopResult):
         if result.action == "stale_cleared":
-            _emit("stale state cleared", json_mode=False)
+            _emit("stale state cleared")
         else:
-            _emit("stopped", json_mode=False)
+            _emit("stopped")
     else:
         s = result.session
         if s is None:
-            _emit(result.action, json_mode=False)
+            _emit(result.action)
         else:
             target = f" -> {s.target}" if s.target else ""
             _emit(
                 f"{result.action}: {s.source} [{s.mode}{target}] pid={s.pid} backend={s.backend}",
-                json_mode=False,
             )
     return 0
 
@@ -229,7 +225,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _usage_error(message: str) -> int:
-    _emit(f"error: {message}", json_mode=False, err=True)
+    _emit(f"error: {message}", err=True)
     return EXIT_USAGE
 
 
@@ -243,22 +239,22 @@ def _map_exception(exc: Exception) -> int:
             return 0
         return EXIT_USAGE
     if isinstance(exc, (NoBackendError, BackendError)):
-        _emit(f"error: {exc}", json_mode=False, err=True)
+        _emit(f"error: {exc}", err=True)
         return EXIT_BACKEND if code is None else int(code)
     if isinstance(exc, OutputNotFoundError):
-        _emit(f"error: {exc}", json_mode=False, err=True)
+        _emit(f"error: {exc}", err=True)
         return EXIT_OUTPUT_NOT_FOUND
     if isinstance(exc, MirrorValidationError):
-        _emit(f"error: {exc}", json_mode=False, err=True)
+        _emit(f"error: {exc}", err=True)
         return EXIT_USAGE
     if isinstance(exc, (WlMirrorMissingError, MirrorStopError)):
-        _emit(f"error: {exc}", json_mode=False, err=True)
+        _emit(f"error: {exc}", err=True)
         return EXIT_EXECUTION
     if isinstance(exc, MirrorError):
-        _emit(f"error: {exc}", json_mode=False, err=True)
-        return int(code) if code is not None else 1
-    _emit(f"error: {exc}", json_mode=False, err=True)
-    return 1
+        _emit(f"error: {exc}", err=True)
+        return int(code) if code is not None else EXIT_EXECUTION
+    _emit(f"error: {exc}", err=True)
+    return EXIT_EXECUTION
 
 
 def main(argv: Sequence[str] | None = None) -> int:

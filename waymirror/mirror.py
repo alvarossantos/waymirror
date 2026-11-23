@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import fcntl
 import os
 import signal
 import subprocess
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
 
@@ -17,7 +19,7 @@ from .state import StateStore
 class MirrorError(RuntimeError):
     """Base error for mirror operations."""
 
-    exit_code = 1
+    exit_code = 5
 
 
 class OutputNotFoundError(MirrorError):
@@ -108,13 +110,19 @@ def _default_killer(pid: int, sig: int) -> None:
     os.kill(pid, sig)
 
 
-def _default_waiter(pid: int, *, timeout_s: float = 1.0, interval_s: float = 0.05) -> bool:
+def _default_waiter(
+    pid: int,
+    *,
+    pid_alive: PidAlive = _default_pid_alive,
+    timeout_s: float = 1.0,
+    interval_s: float = 0.05,
+) -> bool:
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
-        if not _default_pid_alive(pid):
+        if not pid_alive(pid):
             return True
         time.sleep(interval_s)
-    return not _default_pid_alive(pid)
+    return not pid_alive(pid)
 
 
 class MirrorManager:
@@ -134,7 +142,21 @@ class MirrorManager:
         self.pid_alive = pid_alive if pid_alive is not None else _default_pid_alive
         self.now = now if now is not None else _default_now
         self.killer = killer if killer is not None else _default_killer
-        self.waiter = waiter if waiter is not None else (lambda pid: _default_waiter(pid))
+        self.waiter = waiter if waiter is not None else (
+            lambda pid: _default_waiter(pid, pid_alive=self.pid_alive)
+        )
+
+    @contextmanager
+    def _session_lock(self) -> Iterator[None]:
+        """Serialize the load -> decide -> spawn/kill -> save state machine."""
+        lock_path = self.state_store.path.parent / "waymirror.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with lock_path.open("a+") as lock_file:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
     def _validate_outputs(
         self,
@@ -183,6 +205,18 @@ class MirrorManager:
         *,
         available_outputs: list[str] | None = None,
     ) -> StartResult:
+        with self._session_lock():
+            return self._start_locked(backend, source, mode, target, available_outputs=available_outputs)
+
+    def _start_locked(
+        self,
+        backend: str,
+        source: str,
+        mode: MirrorMode,
+        target: str | None,
+        *,
+        available_outputs: list[str] | None = None,
+    ) -> StartResult:
         self._validate_outputs(source, mode, target, available_outputs)
         active, stale_warning = self._load_active()
         if active is not None and active.same_config(
@@ -216,6 +250,10 @@ class MirrorManager:
         return StartResult(action="started", session=session, warning=stale_warning)
 
     def stop(self) -> StopResult:
+        with self._session_lock():
+            return self._stop_locked()
+
+    def _stop_locked(self) -> StopResult:
         session = self.state_store.load()
         if session is None:
             if self.state_store.path.exists():
@@ -245,31 +283,27 @@ class MirrorManager:
         *,
         available_outputs: list[str] | None = None,
     ) -> StartResult | StopResult:
+        with self._session_lock():
+            return self._toggle_locked(backend, source, mode, target, available_outputs=available_outputs)
+
+    def _toggle_locked(
+        self,
+        backend: str,
+        source: str,
+        mode: MirrorMode,
+        target: str | None,
+        *,
+        available_outputs: list[str] | None = None,
+    ) -> StartResult | StopResult:
         self._validate_outputs(source, mode, target, available_outputs)
         active, stale_warning = self._load_active()
         if active is None:
-            started = self.start(
-                backend,
-                source,
-                mode,
-                target,
-                available_outputs=available_outputs,
-            )
-            # preserve stale warning if any came from initial load? start rechecks;
-            # started.warning already includes stale_warning from that check.
-            return started
+            return self._start_locked(backend, source, mode, target, available_outputs=available_outputs)
         if active.same_config(backend=backend, source=source, mode=mode, target=target):
             self._stop_active(active)
             return StopResult(action="stopped", session=None, warning=stale_warning)
         self._stop_active(active)
-        started = self.start(
-            backend,
-            source,
-            mode,
-            target,
-            available_outputs=available_outputs,
-        )
-        return started
+        return self._start_locked(backend, source, mode, target, available_outputs=available_outputs)
 
     def _stop_active(self, session: MirrorSession) -> None:
         try:
