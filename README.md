@@ -115,6 +115,10 @@ captured with `grim -o <output>` at roughly 2 fps while the GUI is visible.
 - No custom app icon or official AUR package yet; the desktop entry uses the
   standard `video-display` icon.
 
+## License
+
+MIT — see [LICENSE](LICENSE).
+
 ## Tests
 
 ```bash

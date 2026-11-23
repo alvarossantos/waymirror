@@ -6,6 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "waymirror"
 version = "0.1.0"
 description = "Wayland screen-mirroring app for niri and umbriel"
+license = { file = "LICENSE" }
 requires-python = ">=3.11"
 dependencies = []
 
