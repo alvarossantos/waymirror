@@ -51,7 +51,7 @@ class StateStore:
     def clear(self) -> None:
         try:
             self.path.unlink()
-        except FileNotFoundError:
+        except OSError:
             pass
 
     def load_valid(self) -> MirrorSession | None:

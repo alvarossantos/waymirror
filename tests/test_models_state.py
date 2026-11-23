@@ -99,3 +99,18 @@ def test_state_store_load_valid_keeps_live_pid(tmp_path):
     loaded = store.load_valid()
     assert loaded == session
     assert p.exists()
+
+
+def test_state_store_load_valid_treats_permission_error_pid_as_alive(tmp_path, monkeypatch):
+    p = tmp_path / "state.json"
+    store = StateStore(p)
+    session = MirrorSession("niri", "eDP-2", "window", None, 12345, "t")
+    store.save(session)
+
+    def raise_permission_error(pid, sig):
+        raise PermissionError("operation not permitted")
+
+    monkeypatch.setattr("waymirror.state.os.kill", raise_permission_error)
+    loaded = store.load_valid()
+    assert loaded == session
+    assert p.exists()
