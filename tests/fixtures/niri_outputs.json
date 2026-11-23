@@ -1,0 +1,60 @@
+{
+  "eDP-2": {
+    "name": "eDP-2",
+    "make": "BOE",
+    "model": "0x0BCA",
+    "serial": "0x00000000",
+    "physical_size": [344, 215],
+    "modes": [
+      {
+        "width": 1920,
+        "height": 1200,
+        "refresh_rate": 60000,
+        "is_preferred": true
+      }
+    ],
+    "current_mode": 0,
+    "vrr_supported": false,
+    "vrr_enabled": false,
+    "logical": {
+      "x": 0,
+      "y": 0,
+      "width": 1920,
+      "height": 1200,
+      "scale": 1.0,
+      "transform": "Normal"
+    }
+  },
+  "HDMI-A-1": {
+    "name": "HDMI-A-1",
+    "make": "Acme Inc",
+    "model": "Monitor",
+    "serial": "12345",
+    "physical_size": [527, 296],
+    "modes": [
+      {
+        "width": 1920,
+        "height": 1080,
+        "refresh_rate": 60000,
+        "is_preferred": true
+      },
+      {
+        "width": 1280,
+        "height": 720,
+        "refresh_rate": 59940,
+        "is_preferred": false
+      }
+    ],
+    "current_mode": 0,
+    "vrr_supported": false,
+    "vrr_enabled": false,
+    "logical": {
+      "x": 1920,
+      "y": 0,
+      "width": 1920,
+      "height": 1080,
+      "scale": 1.0,
+      "transform": "Normal"
+    }
+  }
+}

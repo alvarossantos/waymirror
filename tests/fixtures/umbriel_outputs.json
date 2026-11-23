@@ -1,0 +1,37 @@
+[
+  {
+    "name": "eDP-2",
+    "description": "BOE 0x0BCA (eDP-2)",
+    "make": "BOE",
+    "model": "0x0BCA",
+    "serial": "0x00000000",
+    "physical_size": {"width": 344, "height": 215},
+    "enabled": true,
+    "focused": true,
+    "position": {"x": 0, "y": 0},
+    "logical_size": {"width": 1920, "height": 1200},
+    "scale": 1.0,
+    "transform": "normal",
+    "modes": [
+      {"width": 1920, "height": 1200, "refresh_mhz": 60000, "current": true, "preferred": true}
+    ]
+  },
+  {
+    "name": "HDMI-A-1",
+    "description": "Acme Inc Monitor (HDMI-A-1)",
+    "make": "Acme Inc",
+    "model": "Monitor",
+    "serial": "12345",
+    "physical_size": {"width": 527, "height": 296},
+    "enabled": true,
+    "focused": false,
+    "position": {"x": 1920, "y": 0},
+    "logical_size": {"width": 1920, "height": 1080},
+    "scale": 1.0,
+    "transform": "normal",
+    "modes": [
+      {"width": 1920, "height": 1080, "refresh_mhz": 60000, "current": true, "preferred": true},
+      {"width": 1280, "height": 720, "refresh_mhz": 59940, "current": false, "preferred": false}
+    ]
+  }
+]
