@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Waymirror
+GenericName=Screen Mirroring
+Comment=Mirror a Wayland output with wl-mirror
+Exec=waymirror
+TryExec=waymirror
+Icon=video-display
+Terminal=false
+StartupNotify=true
+Categories=Utility;AudioVideo;
+Keywords=mirror;screen;wayland;niri;umbriel;
