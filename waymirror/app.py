@@ -147,6 +147,8 @@ if _GTK_AVAILABLE:
             self._preview_inflight = False
             self._refresh_timer_id: int | None = None
             self._closed = False
+            self._status_warning: str | None = None
+            self._action_error: str | None = None
 
             self.state_store = state_store or StateStore(default_state_path())
             self.preview_manager = preview_manager or PreviewManager(default_runtime_dir())
@@ -227,27 +229,38 @@ if _GTK_AVAILABLE:
             self.set_content(toolbar)
             self._update_target_sensitivity()
 
-        def _show_error(self, message: str) -> None:
+        def _render_banner(self) -> None:
+            message = self._action_error or self._status_warning or ""
             self.banner.set_title(message)
             self.banner.set_revealed(bool(message))
 
+        def _set_action_error(self, message: str | None) -> None:
+            self._action_error = message or None
+            self._render_banner()
+
+        def _set_status_warning(self, message: str | None) -> None:
+            self._status_warning = message or None
+            self._render_banner()
+
+        def _show_error(self, message: str) -> None:
+            self._set_action_error(message)
+
         def _clear_error(self) -> None:
-            self.banner.set_title("")
-            self.banner.set_revealed(False)
+            self._set_action_error(None)
 
         def _load_outputs(self) -> None:
             try:
                 self.backend = detect_backend(self.backend_name)
                 self.outputs = self.backend.list_outputs()
-                self._clear_error()
+                self._set_action_error(None)
             except (NoBackendError, BackendError) as exc:
                 self.backend = None
                 self.outputs = []
-                self._show_error(str(exc))
+                self._set_action_error(str(exc))
             except Exception as exc:  # noqa: BLE001 - GUI must stay alive
                 self.backend = None
                 self.outputs = []
-                self._show_error(f"Failed to load outputs: {exc}")
+                self._set_action_error(f"Failed to load outputs: {exc}")
             self._rebuild_outputs_ui()
 
         def _rebuild_outputs_ui(self) -> None:
@@ -297,10 +310,9 @@ if _GTK_AVAILABLE:
             try:
                 result = self.mirror_manager.status()
             except Exception as exc:  # noqa: BLE001
-                self._show_error(f"Status error: {exc}")
+                self._set_status_warning(f"Status error: {exc}")
                 return
-            if result.warning:
-                self._show_error(result.warning)
+            self._set_status_warning(result.warning)
             if result.active and result.session is not None:
                 self.start_stop_button.set_label("Stop")
                 self.start_stop_button.remove_css_class("suggested-action")
@@ -314,31 +326,32 @@ if _GTK_AVAILABLE:
             try:
                 status = self.mirror_manager.status()
             except Exception as exc:  # noqa: BLE001
-                self._show_error(f"Status error: {exc}")
+                self._set_action_error(f"Status error: {exc}")
+                self._refresh_status()
                 return
 
             if status.active and status.session is not None:
                 try:
                     result = self.mirror_manager.stop()
                 except (MirrorStopError, Exception) as exc:  # noqa: BLE001
-                    self._show_error(str(exc))
+                    self._set_action_error(str(exc))
                     self._refresh_status()
                     return
                 if result.warning:
-                    self._show_error(result.warning)
+                    self._set_action_error(result.warning)
                 else:
-                    self._clear_error()
+                    self._set_action_error(None)
                 self._refresh_status()
                 return
 
             source = self._selected_source()
             if not source:
-                self._show_error("Select a source output")
+                self._set_action_error("Select a source output")
                 return
             mode = self._selected_mode()
             target = self._selected_target() if mode == "fullscreen" else None
             if mode == "fullscreen" and not target:
-                self._show_error("Select a target output for fullscreen mode")
+                self._set_action_error("Select a target output for fullscreen mode")
                 return
             backend_name = self.backend.name if self.backend is not None else self.backend_name
             available = [o.name for o in self.outputs]
@@ -351,13 +364,13 @@ if _GTK_AVAILABLE:
                     available_outputs=available,
                 )
             except (OutputNotFoundError, MirrorValidationError, WlMirrorMissingError, MirrorStopError, Exception) as exc:  # noqa: BLE001
-                self._show_error(str(exc))
+                self._set_action_error(str(exc))
                 self._refresh_status()
                 return
             if result.warning:
-                self._show_error(result.warning)
+                self._set_action_error(result.warning)
             else:
-                self._clear_error()
+                self._set_action_error(None)
             self._refresh_status()
 
         def _ensure_refresh_timer(self) -> None:
@@ -400,7 +413,13 @@ if _GTK_AVAILABLE:
                     results[name] = (path, err)
                 GLib.idle_add(self._apply_preview_results, results)
 
-            threading.Thread(target=worker, daemon=True).start()
+            try:
+                threading.Thread(target=worker, daemon=True).start()
+            except Exception as exc:  # noqa: BLE001
+                self._refresh_pending = False
+                self._preview_inflight = False
+                logger.exception("failed to start preview refresh worker")
+                self._set_action_error(f"Preview refresh failed: {exc}")
 
         def _apply_preview_results(self, results: dict[str, tuple[Path | None, str | None]]) -> bool:
             self._refresh_pending = False
