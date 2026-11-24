@@ -1,0 +1,22 @@
+[
+  {
+    "id": 42,
+    "app_id": "firefox",
+    "title": "Waymirror",
+    "x": -1903,
+    "y": 10,
+    "w": 800,
+    "h": 600,
+    "output": "HDMI-A-1",
+    "visible": true,
+    "minimized": false
+  },
+  {
+    "id": "43",
+    "app-id": "org.example.Terminal",
+    "title": "Terminal",
+    "geometry": {"x": 20, "y": 30, "width": 500, "height": 400, "output": "eDP-1"},
+    "visible": true,
+    "minimized": false
+  }
+]

@@ -1,4 +1,4 @@
-from waymirror.models import Output, MirrorSession
+from waymirror.models import Output, MirrorSession, Window
 from waymirror.state import StateStore
 
 def test_output_roundtrip():
@@ -114,3 +114,54 @@ def test_state_store_load_valid_treats_permission_error_pid_as_alive(tmp_path, m
     loaded = store.load_valid()
     assert loaded == session
     assert p.exists()
+
+
+def test_window_region_helpers():
+    window = Window(id="abc", x=-1903, y=59, w=1689, h=1004, output="HDMI-A-1")
+    assert window.wl_mirror_region() == "-1903,59 1689x1004 HDMI-A-1"
+    assert window.grim_region() == "-1903,59 1689x1004"
+
+
+def test_window_is_capturable():
+    window = Window(id="abc", visible=True, minimized=False, w=1, h=1)
+    assert window.is_capturable() is True
+    window.minimized = True
+    assert window.is_capturable() is False
+    window.minimized = False
+    window.w = 0
+    assert window.is_capturable() is False
+
+
+def test_window_from_dict_normalizes_boolean_strings():
+    window = Window.from_dict({"id": "abc", "visible": "FALSE", "minimized": "TrUe"})
+    assert window.visible is False
+    assert window.minimized is True
+    assert Window.from_dict({"id": "default"}).visible is True
+    assert Window.from_dict({"id": "default"}).minimized is False
+
+
+def test_session_from_dict_legacy_keys():
+    session = MirrorSession.from_dict({
+        "backend": "niri", "source": "eDP-2", "mode": "window", "target": None,
+        "pid": 42, "started_at": "t",
+    })
+    assert session.source_kind == "output"
+    assert session.region is None
+
+
+def test_session_roundtrip_window_kind():
+    session = MirrorSession("niri", "abc", "window", None, 42, "t", "window", "10,20 300x200 HDMI-A-1")
+    restored = MirrorSession.from_dict(session.to_dict())
+    assert restored == session
+    assert restored.source_kind == "window"
+    assert restored.region == "10,20 300x200 HDMI-A-1"
+
+
+def test_same_config_window_kind():
+    session = MirrorSession("niri", "abc", "window", None, 42, "t", "window", "10,20 300x200 HDMI-A-1")
+    def same(**kwargs):
+        return session.same_config(backend="niri", source="abc", mode="window", target=None, **kwargs)
+    assert not same(source_kind="output")
+    assert not same(source_kind="window", region="20,20 300x200 HDMI-A-1")
+    session.region = None
+    assert same(source_kind="window", region="30,30 300x200 HDMI-A-1")

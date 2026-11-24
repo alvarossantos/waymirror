@@ -3,17 +3,30 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Callable
 from typing import Any
 
-from waymirror.models import Output
+from waymirror.models import Output, Window
 
 from .base import BackendError
+from ._windows import _parse_window_items
 
 RunFunc = Callable[[list[str]], str]
+logger = logging.getLogger(__name__)
 
 
-def _as_int(value: Any, default: int = 0) -> int:
+def parse_umbriel_windows(text: str) -> list[Window]:
+    """Parse `umbriel windows --json` into normalized Windows."""
+    try:
+        payload = json.loads(text)
+    except (json.JSONDecodeError, TypeError) as exc:
+        logger.warning("invalid umbriel windows JSON: %s", exc)
+        return []
+    return _parse_window_items(payload, "umbriel")
+
+
+def _as_int(value: Any, default: int | None = 0) -> int | None:
     try:
         return int(value)
     except Exception:  # noqa: BLE001 - defensive parse
@@ -118,3 +131,14 @@ class UmbrielBackend:
     def list_outputs(self) -> list[Output]:
         text = self._run(["umbriel", "outputs", "--json"])
         return parse_umbriel_outputs(text)
+
+    def list_windows(self) -> list[Window]:
+        try:
+            text = self._run(["umbriel", "windows", "--json"])
+        except BackendError as exc:
+            logger.warning("failed to list umbriel windows: %s", exc)
+            return []
+        if not text.strip():
+            logger.warning("empty umbriel windows response")
+            return []
+        return parse_umbriel_windows(text)

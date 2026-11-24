@@ -11,7 +11,7 @@ from typing import Any
 
 from .backends.base import BackendError, NoBackendError, detect_backend
 from .mirror import MirrorManager, MirrorStopError, MirrorValidationError, OutputNotFoundError, WlMirrorMissingError
-from .models import MirrorMode, Output
+from .models import MirrorMode, Output, SourceKind, Window
 from .preview import PreviewManager
 from .state import StateStore
 
@@ -124,6 +124,57 @@ if _GTK_AVAILABLE:
                 self.error_label.set_visible(False)
 
 
+    class WindowCard(Gtk.Box):
+        def __init__(self, window: Window) -> None:
+            super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+            self.window = window
+            self.add_css_class("card")
+            for method in ("set_margin_top", "set_margin_bottom", "set_margin_start", "set_margin_end"):
+                getattr(self, method)(6)
+            self.picture = Gtk.Picture()
+            self.picture.set_size_request(320, 180)
+            self.picture.set_can_shrink(True)
+            self.picture.set_content_fit(Gtk.ContentFit.CONTAIN)
+            self.picture.set_hexpand(True)
+            self.picture.set_vexpand(True)
+            name = window.app_id or window.title or window.id
+            self.name_label = Gtk.Label(label=name)
+            self.name_label.add_css_class("heading")
+            self.name_label.set_halign(Gtk.Align.START)
+            self.title_label = Gtk.Label(label=window.title or " ")
+            self.title_label.set_halign(Gtk.Align.START)
+            self.title_label.set_wrap(True)
+            self.title_label.set_xalign(0)
+            self.title_label.add_css_class("dim-label")
+            self.meta_label = Gtk.Label(label=f"{window.w}x{window.h}")
+            self.meta_label.set_halign(Gtk.Align.START)
+            self.meta_label.add_css_class("dim-label")
+            self.error_label = Gtk.Label(label="")
+            self.error_label.set_halign(Gtk.Align.START)
+            self.error_label.set_wrap(True)
+            self.error_label.set_xalign(0)
+            self.error_label.add_css_class("error")
+            for child in (self.picture, self.name_label, self.title_label, self.meta_label, self.error_label):
+                self.append(child)
+
+        def set_preview(self, path: Path | None, error: str | None) -> None:
+            if path is not None and path.exists():
+                try:
+                    texture = Gdk.Texture.new_from_filename(str(path))
+                except Exception:
+                    texture = None
+                if texture is not None:
+                    self.picture.set_paintable(texture)
+            self.error_label.set_text(error or "")
+            self.error_label.set_visible(bool(error))
+
+        def update_meta(self, window: Window) -> None:
+            self.window = window
+            self.name_label.set_label(window.app_id or window.title or window.id)
+            self.title_label.set_label(window.title or " ")
+            self.meta_label.set_label(f"{window.w}x{window.h}")
+
+
     class WaymirrorWindow(Adw.ApplicationWindow):
         def __init__(
             self,
@@ -141,7 +192,9 @@ if _GTK_AVAILABLE:
             self.backend_name = backend_name
             self.backend = None
             self.outputs: list[Output] = []
-            self.cards: dict[str, OutputCard] = {}
+            self.windows: list[Window] = []
+            self.window_error: str | None = None
+            self.cards: dict[str, OutputCard | WindowCard] = {}
             self.preview_paths: dict[str, Path | None] = {}
             self._refresh_pending = False
             self._preview_inflight = False
@@ -189,6 +242,10 @@ if _GTK_AVAILABLE:
             controls = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
             controls.set_halign(Gtk.Align.FILL)
 
+            self.kind_model = Gtk.StringList.new(["Output", "Window"])
+            self.kind_dropdown = Gtk.DropDown(model=self.kind_model)
+            self.kind_dropdown.connect("notify::selected", lambda *_: self._rebuild_outputs_ui())
+
             self.source_model = Gtk.StringList()
             self.source_dropdown = Gtk.DropDown(model=self.source_model)
             self.source_dropdown.set_hexpand(True)
@@ -206,6 +263,8 @@ if _GTK_AVAILABLE:
             self.start_stop_button.add_css_class("suggested-action")
             self.start_stop_button.connect("clicked", lambda *_: self._on_start_stop())
 
+            controls.append(Gtk.Label(label="Kind"))
+            controls.append(self.kind_dropdown)
             controls.append(Gtk.Label(label="Source"))
             controls.append(self.source_dropdown)
             controls.append(Gtk.Label(label="Mode"))
@@ -261,6 +320,17 @@ if _GTK_AVAILABLE:
                 self.backend = None
                 self.outputs = []
                 self._set_action_error(f"Failed to load outputs: {exc}")
+            self._load_sources()
+
+        def _load_sources(self) -> None:
+            self.windows = []
+            self.window_error = None
+            if self.backend is not None:
+                try:
+                    self.windows = [window for window in self.backend.list_windows() if window.is_capturable()]
+                except Exception as exc:  # noqa: BLE001 - window discovery must not hide outputs
+                    self.window_error = str(exc)
+                    self._set_action_error(f"Failed to load windows: {exc}")
             self._rebuild_outputs_ui()
 
         def _rebuild_outputs_ui(self) -> None:
@@ -271,17 +341,28 @@ if _GTK_AVAILABLE:
                 self.flow.remove(child)
             self.cards.clear()
 
-            self.source_model.splice(0, self.source_model.get_n_items(), [o.name for o in self.outputs])
+            is_window = self._selected_kind() == "window"
+            sources = self.windows if is_window else self.outputs
+            labels = [f"{w.app_id or w.title or w.id} — {w.title or w.id}" for w in self.windows] if is_window else [o.name for o in self.outputs]
+            self.source_model.splice(0, self.source_model.get_n_items(), labels)
             self.target_model.splice(0, self.target_model.get_n_items(), [o.name for o in self.outputs])
 
-            for output in self.outputs:
-                card = OutputCard(output)
-                self.cards[output.name] = card
+            for source in sources:
+                if is_window:
+                    card = WindowCard(source)
+                    key = f"window:{source.id}"
+                else:
+                    card = OutputCard(source)
+                    key = source.name
+                self.cards[key] = card
                 self.flow.append(card)
 
-            if self.outputs:
-                if self.source_dropdown.get_selected() == Gtk.INVALID_LIST_POSITION:
+            if sources:
+                if self.source_dropdown.get_selected() == Gtk.INVALID_LIST_POSITION or self.source_dropdown.get_selected() >= len(sources):
                     self.source_dropdown.set_selected(0)
+            else:
+                self.source_dropdown.set_selected(Gtk.INVALID_LIST_POSITION)
+            if self.outputs:
                 if self.target_dropdown.get_selected() == Gtk.INVALID_LIST_POSITION:
                     # Prefer a different target than source when possible.
                     self.target_dropdown.set_selected(1 if len(self.outputs) > 1 else 0)
@@ -289,9 +370,22 @@ if _GTK_AVAILABLE:
 
         def _selected_source(self) -> str | None:
             idx = self.source_dropdown.get_selected()
-            if idx == Gtk.INVALID_LIST_POSITION or idx < 0 or idx >= len(self.outputs):
+            sources = self.windows if self._selected_kind() == "window" else self.outputs
+            if idx == Gtk.INVALID_LIST_POSITION or idx < 0 or idx >= len(sources):
                 return None
-            return self.outputs[idx].name
+            return sources[idx].id if self._selected_kind() == "window" else sources[idx].name
+
+        def _selected_kind(self) -> SourceKind:
+            dropdown = getattr(self, "kind_dropdown", None)
+            return "window" if dropdown is not None and dropdown.get_selected() == 1 else "output"
+
+        def _selected_window(self) -> Window | None:
+            if self._selected_kind() != "window" or not getattr(self, "windows", None):
+                return None
+            idx = self.source_dropdown.get_selected()
+            if idx == Gtk.INVALID_LIST_POSITION or idx < 0 or idx >= len(self.windows):
+                return None
+            return self.windows[idx]
 
         def _selected_target(self) -> str | None:
             idx = self.target_dropdown.get_selected()
@@ -344,9 +438,14 @@ if _GTK_AVAILABLE:
                 self._refresh_status()
                 return
 
+            source_kind = self._selected_kind()
             source = self._selected_source()
             if not source:
-                self._set_action_error("Select a source output")
+                self._set_action_error("Select a source window" if source_kind == "window" else "Select a source output")
+                return
+            selected_window = self._selected_window()
+            if source_kind == "window" and (selected_window is None or not selected_window.is_capturable()):
+                self._set_action_error("Select a capturable source window")
                 return
             mode = self._selected_mode()
             target = self._selected_target() if mode == "fullscreen" else None
@@ -362,6 +461,8 @@ if _GTK_AVAILABLE:
                     mode,
                     target,
                     available_outputs=available,
+                    source_kind=source_kind,
+                    available_windows=self.windows if source_kind == "window" else None,
                 )
             except (OutputNotFoundError, MirrorValidationError, WlMirrorMissingError, MirrorStopError, Exception) as exc:  # noqa: BLE001
                 self._set_action_error(str(exc))
@@ -385,20 +486,52 @@ if _GTK_AVAILABLE:
                 GLib.source_remove(self._refresh_timer_id)
                 self._refresh_timer_id = None
 
+        def _refresh_window_geometry(self) -> None:
+            if self._selected_kind() != "window" or self.backend is None:
+                return
+            try:
+                fresh = [window for window in self.backend.list_windows() if window.is_capturable()]
+            except Exception:  # noqa: BLE001 - keep last known geometry on backend failure
+                return
+            fresh_by_id = {window.id: window for window in fresh}
+            if set(fresh_by_id) != {window.id for window in self.windows}:
+                self._load_sources()
+                return
+            for window in self.windows:
+                updated = fresh_by_id[window.id]
+                window.x = updated.x
+                window.y = updated.y
+                window.w = updated.w
+                window.h = updated.h
+                window.title = updated.title
+                window.app_id = updated.app_id
+                window.output = updated.output
+                card = self.cards.get(f"window:{window.id}")
+                if card is not None:
+                    card.update_meta(window)
+
         def _on_refresh_tick(self) -> bool:
             if self._closed or not self.get_mapped():
                 self._refresh_timer_id = None
                 return False
             self._refresh_status()
+            self._refresh_window_geometry()
             self._schedule_preview_refresh()
             return True
 
         def _schedule_preview_refresh(self) -> None:
-            if self._refresh_pending or self._preview_inflight or not self.outputs:
+            if self._refresh_pending or self._preview_inflight or not (self.outputs or self.windows):
                 return
             self._refresh_pending = True
             self._preview_inflight = True
             output_names = [o.name for o in self.outputs]
+            windows = list(self.windows) if self._selected_kind() == "window" else []
+            try:
+                status = self.mirror_manager.status()
+                session = status.session if status.active else None
+            except Exception:
+                session = None
+            window_regions = {window.id: self._window_region_for_preview(window, session) for window in windows}
             preview_manager = self.preview_manager
 
             def worker() -> None:
@@ -406,6 +539,15 @@ if _GTK_AVAILABLE:
                 for name in output_names:
                     try:
                         path = preview_manager.capture(name)
+                        err = preview_manager.errors.get(name)
+                    except Exception as exc:  # noqa: BLE001
+                        path = None
+                        err = str(exc)
+                    results[name] = (path, err)
+                for window in windows:
+                    name = f"window:{window.id}"
+                    try:
+                        path = preview_manager.capture(name, region=window_regions[window.id])
                         err = preview_manager.errors.get(name)
                     except Exception as exc:  # noqa: BLE001
                         path = None
@@ -420,6 +562,12 @@ if _GTK_AVAILABLE:
                 self._preview_inflight = False
                 logger.exception("failed to start preview refresh worker")
                 self._set_action_error(f"Preview refresh failed: {exc}")
+
+        @staticmethod
+        def _window_region_for_preview(window: Window, session: Any = None) -> str:
+            if session is not None and getattr(session, "source_kind", "output") == "window" and getattr(session, "source", None) == window.id and getattr(session, "region", None):
+                return session.region
+            return window.grim_region()
 
         def _apply_preview_results(self, results: dict[str, tuple[Path | None, str | None]]) -> bool:
             self._refresh_pending = False

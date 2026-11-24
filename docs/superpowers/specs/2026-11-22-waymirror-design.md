@@ -9,14 +9,14 @@ O usuário já tinha módulos de espelhamento acoplados ao iNiR e ao Ryoku. O ob
 ## Metas
 
 - Abrir GUI e ver saídas detectadas com **preview ao vivo** (snapshots).
-- Espelhar **tela/saída** (não janela) em dois modos: **janela normal** ou **fullscreen em saída de destino**.
+- Espelhar **tela/saída ou região de janela** em dois modos: **janela normal** ou **fullscreen em saída de destino**.
 - Funcionar em **niri** e **umbriel**.
 - CLI headless para keybind/script, compartilhando estado com a GUI.
 - Uma sessão de espelhamento ativa por vez.
 
 ## Não-metas (v1)
 
-- Espelhar janela específica (requer portal/pipewire; futuro).
+- Captura isolada de superfície de janela (portal/pipewire; futuro).
 - Múltiplas sessões simultâneas.
 - Stream real de preview (pipewire/GStreamer/screencopy embutido).
 - Suporte a Hyprland, sway, GNOME, KDE, X11.
@@ -34,7 +34,8 @@ O usuário já tinha módulos de espelhamento acoplados ao iNiR e ao Ryoku. O ob
 - Wayland. `wl-mirror 0.18.5+` e `grim` instalados.
 - Python 3 + GTK4/libadwaita + PyGObject disponíveis no sistema.
 - `wl-mirror` captura saída; não captura janela arbitrária por ID.
-- Preview é rota 1: snapshots periódicos com `grim -o <output>`.
+- Janela é implementada via `wl-mirror -r "<x>,<y> <w>x<h> <output>"`, usando geometria do inventário do compositor.
+- Preview é rota 1: snapshots periódicos com `grim -o <output>` para saídas e `grim -g <region>` para janelas.
 - Niri: inventário via `niri msg --json outputs`. Umbriel: `umbriel outputs --json`.
 
 ## Abordagens consideradas
@@ -103,7 +104,7 @@ A detecção nunca escolhe backend só por “binário instalado” quando há s
 
 ### Preview
 
-- Rota 1: `grim -o <name> <tmpfile>` a ~2 fps por saída visível.
+- Rota 1: previews de saída usam `grim -o <name> <tmpfile>`; previews de janela usam `grim -g <region> <tmpfile>`, a ~2 fps enquanto a GUI está visível.
 - Diretório: `$XDG_RUNTIME_DIR/waymirror/previews/`.
 - GUI carrega imagem e atualiza thumbnail; falha de captura de uma saída não derruba app (placeholder/erro no card).
 - Pausa quando janela não visível/minimizada; retoma ao mostrar.
@@ -119,6 +120,15 @@ A detecção nunca escolhe backend só por “binário instalado” quando há s
 - `toggle`: se inativa, inicia config passada. Se ativa e mesma config, para. Se ativa e config diferente, para anterior e inicia nova (exit 0). Requer args suficientes para iniciar quando inativa.
 - `stop`: mata PID registrado no state. Se PID morto/ausente, limpa state e retorna sucesso com aviso. Se PID vivo e kill falhar, erro (exit 5). **Sem `pkill -x wl-mirror` e sem `--force` na v1** — não matar processos alheios.
 - Validar: fonte existe; destino existe e diferente da fonte no fullscreen; `wl-mirror` presente.
+
+### Espelhamento de janela (entregue)
+
+- `waymirror list windows [--json]` lista janelas e IDs; `start --window <id> --mode window|fullscreen` usa o ID canônico.
+- Implementação por região fixa com `wl-mirror -r`, obtida de `umbriel windows --json` ou `niri msg --json windows` (tracking de geometria no início).
+- A captura é de pixels da tela: janela coberta ou minimizada não é isolada. Mover/redimensionar causa drift; parar e iniciar de novo atualiza a geometria. Não há follow automático nem portal/pipewire.
+- No fullscreen, `--target` deve ser diferente da saída que contém a janela.
+- O formato JSON de janelas do niri não foi verificado nesta máquina; parser defensivo retorna lista vazia e registra warning para formato desconhecido.
+- Compatibilidade de estado: `source_kind` ausente em estado legado significa `output`; novos estados gravam `source_kind` e região para distinguir sessões de janela e reconhecer mudança de geometria. Campos desconhecidos são ignorados.
 
 ### GUI (GTK4/libadwaita)
 
@@ -138,10 +148,12 @@ waymirror                         # abre GUI
 waymirror --help                  # ajuda
 waymirror --version               # versão
 waymirror list [--json]           # lista saídas
+waymirror list windows [--json]   # lista janelas
 waymirror status [--json]         # estado da sessão
 waymirror stop                    # para sessão ativa
 waymirror start --source <out> --mode window
 waymirror start --source <out> --mode fullscreen --target <out>
+waymirror start --window <id> --mode window|fullscreen [--target <out>]
 waymirror toggle --source <out> --mode fullscreen --target <out>
 ```
 
@@ -164,7 +176,7 @@ waymirror toggle --source <out> --mode fullscreen --target <out>
 
 ## Fora da v1 / próximo
 
-- Espelhar janela específica (portal/pipewire, como Discord).
+- Captura isolada de janela via portal/pipewire (como Discord).
 - Múltiplas sessões.
 - Preview mais fluido/stream.
 - Hyprland e outros compositores.

@@ -1,15 +1,15 @@
 # Waymirror
 
 Waymirror is a standalone Wayland screen-mirroring app for **niri** and **umbriel**.
-It mirrors one output (for example `eDP-2`) to a normal window or fullscreen on
-another output, using `wl-mirror` as the engine. A GTK4/libadwaita GUI shows live
-output previews; a headless CLI exposes the same session state for keybinds and
-scripts.
+It mirrors one output (for example `eDP-2`) or a window to a normal window or
+fullscreen on another output, using `wl-mirror` as the engine. A GTK4/libadwaita
+GUI shows previews; a headless CLI exposes the same session state for keybinds
+and scripts.
 
 ## Scope
 
 - Wayland sessions on niri and umbriel only.
-- Screen/output mirroring only: the source is a whole output, never a single window.
+- Output and window sources are supported on niri and umbriel.
 - Exactly one mirror session at a time, shared between GUI and CLI via
   `$XDG_RUNTIME_DIR/waymirror/state.json` (fallback: `/tmp/waymirror-$UID/state.json`).
 - No `sudo` in app behavior; missing dependencies are reported with Arch package names.
@@ -85,13 +85,25 @@ in state, `grim -o`, and `wl-mirror`:
 ```bash
 waymirror list
 waymirror list --json
+waymirror list windows
+waymirror list windows --json
 waymirror status
 waymirror status --json
 waymirror start --source eDP-2 --mode window
 waymirror start --source eDP-2 --mode fullscreen --target HDMI-A-1
+waymirror start --window 42 --mode window
+waymirror start --window 42 --mode fullscreen --target eDP-2
 waymirror toggle --source eDP-2 --mode fullscreen --target HDMI-A-1
 waymirror stop
 ```
+
+`list windows` enumerates compositor windows; IDs are the canonical selectors
+for `start --window`. The window capture passes the window's current screen region
+to `wl-mirror -r`. This captures pixels from the screen region, not an isolated
+window surface: a covered or minimized window is not captured independently.
+The region is fixed when mirroring starts. Moving or resizing the window causes
+drift; stop and start again to use its new geometry. In fullscreen mode,
+`--target` must be an output other than the output containing the source window.
 
 `start` is idempotent for the same config and replaces a different active config.
 `toggle` starts when inactive, stops when the same config is active, and replaces
@@ -103,13 +115,15 @@ backend, `4` output not found, `5` execution failure (missing `wl-mirror`, faile
 stop, or an unexpected internal error).
 
 Preview snapshots live under `$XDG_RUNTIME_DIR/waymirror/previews/` and are
-captured with `grim -o <output>` at roughly 2 fps while the GUI is visible.
+captured at roughly 2 fps while the GUI is visible: output previews use
+`grim -o <output>`, and window previews use `grim -g <region>`.
 
 ## v1 limitations
 
 - No Hyprland, sway, GNOME, KDE, or X11 support.
-- No window capture: capturing a single window would need pipewire/portal and is
-  out of scope for v1.
+- Window mirroring uses a screen region; there is no portal/pipewire capture or
+  automatic tracking. The niri window JSON shape has not been verified on this
+  machine; an unrecognized response produces a warning and an empty list.
 - No multiple simultaneous sessions, no `--force`, and no `pkill -x wl-mirror`.
 - Previews are periodic snapshots, not a continuous stream.
 - No custom app icon or official AUR package yet; the desktop entry uses the

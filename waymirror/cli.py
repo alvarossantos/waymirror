@@ -49,6 +49,16 @@ def _json_dump(payload: object) -> str:
 
 def _cmd_list(args: argparse.Namespace) -> int:
     backend = detect_backend(args.backend)
+    if args.kind == "windows":
+        windows = backend.list_windows()
+        if args.json:
+            _emit(_json_dump({"backend": backend.name, "windows": [w.to_dict() for w in windows]}))
+        elif not windows:
+            _emit("No windows found.")
+        else:
+            for w in windows:
+                _emit(f"{w.id}\t{w.app_id}\t{w.title}\t{w.w}x{w.h}+{w.x},{w.y}\t[{w.output}]")
+        return 0
     outputs = backend.list_outputs()
     if args.json:
         _emit(
@@ -112,16 +122,25 @@ def _available_output_names(backend) -> list[str]:
     return [o.name for o in outputs]
 
 
+def _resolve_start_args(args: argparse.Namespace, backend):
+    if args.window_id is not None:
+        return args.window_id, "window", backend.list_windows()
+    return args.source, "output", None
+
+
 def _cmd_start(args: argparse.Namespace) -> int:
     backend = detect_backend(args.backend)
     available = _available_output_names(backend)
+    source, source_kind, windows = _resolve_start_args(args, backend)
     manager = MirrorManager(StateStore(default_state_path()))
     result: StartResult = manager.start(
         backend.name,
-        args.source,
+        source,
         args.mode,
         args.target,
         available_outputs=available,
+        source_kind=source_kind,
+        available_windows=windows,
     )
     if result.warning:
         _emit(f"Warning: {result.warning}", err=True)
@@ -153,13 +172,16 @@ def _cmd_stop(args: argparse.Namespace) -> int:
 def _cmd_toggle(args: argparse.Namespace) -> int:
     backend = detect_backend(args.backend)
     available = _available_output_names(backend)
+    source, source_kind, windows = _resolve_start_args(args, backend)
     manager = MirrorManager(StateStore(default_state_path()))
     result = manager.toggle(
         backend.name,
-        args.source,
+        source,
         args.mode,
         args.target,
         available_outputs=available,
+        source_kind=source_kind,
+        available_windows=windows,
     )
     warning = getattr(result, "warning", None)
     if warning:
@@ -199,6 +221,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=False)
 
     p_list = sub.add_parser("list", help="List outputs")
+    p_list.add_argument("kind", nargs="?", choices=["outputs", "windows"], default="outputs")
     p_list.add_argument("--json", action="store_true", help="Output JSON")
     p_list.set_defaults(_handler=_cmd_list)
 
@@ -207,7 +230,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_status.set_defaults(_handler=_cmd_status)
 
     p_start = sub.add_parser("start", help="Start mirroring")
-    p_start.add_argument("--source", required=True, help="Source output name")
+    p_start.add_argument("--source", help="Source output name")
+    p_start.add_argument("--window", dest="window_id", help="Source window ID")
     p_start.add_argument("--mode", required=True, choices=["window", "fullscreen"], help="Mirror mode")
     p_start.add_argument("--target", help="Target output name (required for fullscreen)")
     p_start.set_defaults(_handler=_cmd_start)
@@ -216,7 +240,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_stop.set_defaults(_handler=_cmd_stop)
 
     p_toggle = sub.add_parser("toggle", help="Toggle mirroring")
-    p_toggle.add_argument("--source", required=True, help="Source output name")
+    p_toggle.add_argument("--source", help="Source output name")
+    p_toggle.add_argument("--window", dest="window_id", help="Source window ID")
     p_toggle.add_argument("--mode", required=True, choices=["window", "fullscreen"], help="Mirror mode")
     p_toggle.add_argument("--target", help="Target output name (required for fullscreen)")
     p_toggle.set_defaults(_handler=_cmd_toggle)
@@ -274,6 +299,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     # Additional validation required by spec
     if command in ("start", "toggle"):
+        if bool(args.source) == bool(args.window_id):
+            return _usage_error("provide exactly one of --source or --window")
         if args.mode == "fullscreen" and not args.target:
             return _usage_error("--target is required when --mode fullscreen")
 
