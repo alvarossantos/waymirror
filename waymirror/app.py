@@ -249,7 +249,7 @@ if _GTK_AVAILABLE:
             self.source_model = Gtk.StringList()
             self.source_dropdown = Gtk.DropDown(model=self.source_model)
             self.source_dropdown.set_hexpand(True)
-            self.source_dropdown.connect("notify::selected", lambda *_: self._update_target_sensitivity())
+            self.source_dropdown.connect("notify::selected", lambda *_: self._on_source_changed())
 
             self.mode_model = Gtk.StringList.new(["Window", "Fullscreen"])
             self.mode_dropdown = Gtk.DropDown(model=self.mode_model)
@@ -366,6 +366,7 @@ if _GTK_AVAILABLE:
                 if self.target_dropdown.get_selected() == Gtk.INVALID_LIST_POSITION:
                     # Prefer a different target than source when possible.
                     self.target_dropdown.set_selected(1 if len(self.outputs) > 1 else 0)
+            self._ensure_distinct_target()
             self._update_target_sensitivity()
 
         def _selected_source(self) -> str | None:
@@ -395,6 +396,20 @@ if _GTK_AVAILABLE:
 
         def _selected_mode(self) -> MirrorMode:
             return "fullscreen" if self.mode_dropdown.get_selected() == 1 else "window"
+
+        def _ensure_distinct_target(self) -> None:
+            if self._selected_kind() != "output" or len(self.outputs) < 2:
+                return
+            source = self._selected_source()
+            if source is None or self._selected_target() != source:
+                return
+            index = next((i for i, output in enumerate(self.outputs) if output.name != source), None)
+            if index is not None:
+                self.target_dropdown.set_selected(index)
+
+        def _on_source_changed(self) -> None:
+            self._ensure_distinct_target()
+            self._update_target_sensitivity()
 
         def _update_target_sensitivity(self) -> None:
             fullscreen = self._selected_mode() == "fullscreen"
