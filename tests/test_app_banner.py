@@ -66,6 +66,30 @@ def _load_app_with_fake_gtk(monkeypatch):
         def set_hexpand(self, *a):
             pass
 
+        def set_size_request(self, *a):
+            pass
+
+        def set_can_shrink(self, *a):
+            pass
+
+        def set_content_fit(self, *a):
+            pass
+
+        def set_paintable(self, *a):
+            pass
+
+        def set_wrap(self, *a):
+            pass
+
+        def set_xalign(self, *a):
+            pass
+
+        def set_text(self, *a):
+            pass
+
+        def set_visible(self, *a):
+            pass
+
         def set_vexpand(self, *a):
             pass
 
@@ -311,3 +335,155 @@ def test_preview_thread_start_failure_resets_flags(monkeypatch):
     assert win._refresh_pending is False
     assert win._preview_inflight is False
     assert "boom" in win.banner.title
+
+
+class _Model:
+    def __init__(self):
+        self.items = []
+
+    def splice(self, pos, n, items):
+        self.items[pos : pos + n] = list(items)
+
+    def get_n_items(self):
+        return len(self.items)
+
+
+class _Dropdown:
+    def __init__(self, selected=0):
+        self.selected = selected
+
+    def get_selected(self):
+        return self.selected
+
+    def set_selected(self, value):
+        self.selected = value
+
+    def set_sensitive(self, value):
+        self.sensitive = value
+
+
+class _Flow:
+    def __init__(self):
+        self.children = []
+
+    def get_first_child(self):
+        return self.children[0] if self.children else None
+
+    def remove(self, child):
+        self.children.remove(child)
+
+    def append(self, child):
+        self.children.append(child)
+
+
+def _bare_window(app, *, outputs=(), windows=(), kind=0):
+    win = object.__new__(app.WaymirrorWindow)
+    win.outputs = list(outputs)
+    win.windows = list(windows)
+    win.window_error = None
+    win.cards = {}
+    win.preview_paths = {}
+    win.flow = _Flow()
+    win.source_model = _Model()
+    win.target_model = _Model()
+    win.kind_dropdown = _Dropdown(kind)
+    win.source_dropdown = _Dropdown(0)
+    win.target_dropdown = _Dropdown(0)
+    win.mode_dropdown = _Dropdown(0)
+    win.start_stop_button = _DummyButton()
+    win.banner = _DummyBanner()
+    win._status_warning = None
+    win._action_error = None
+    win.backend_name = "niri"
+    win._refresh_pending = False
+    win._preview_inflight = False
+    return win
+
+
+def test_kind_dropdown_switches_source_list(monkeypatch):
+    app = _load_app_with_fake_gtk(monkeypatch)
+    from waymirror.models import Output, Window
+
+    win = _bare_window(app, outputs=[Output("DP-1")], windows=[Window("42", app_id="firefox", title="Docs", w=800, h=600)])
+    win._rebuild_outputs_ui()
+    assert win.source_model.items == ["DP-1"]
+    win.kind_dropdown.set_selected(1)
+    win._rebuild_outputs_ui()
+    assert win.source_model.items == ["firefox — Docs"]
+    assert len(win.flow.children) == 1
+    win.kind_dropdown.set_selected(0)
+    win._rebuild_outputs_ui()
+    assert win.source_model.items == ["DP-1"]
+    assert len(win.flow.children) == 1
+
+
+def test_gui_window_discovery_failure_nonfatal(monkeypatch):
+    app = _load_app_with_fake_gtk(monkeypatch)
+    from waymirror.models import Output
+
+    output = Output("DP-1")
+
+    class Backend:
+        name = "niri"
+
+        def list_outputs(self):
+            return [output]
+
+        def list_windows(self):
+            raise RuntimeError("window listing failed")
+
+    win = _bare_window(app)
+    monkeypatch.setattr(app, "detect_backend", lambda _name: Backend())
+    win._load_outputs()
+    assert win.outputs == [output]
+    assert len(win.flow.children) == 1
+    assert "window listing failed" in win.banner.title
+
+
+def test_start_passes_window_source(monkeypatch):
+    app = _load_app_with_fake_gtk(monkeypatch)
+    from waymirror.models import Window
+
+    window = Window("42", app_id="firefox", title="Docs", x=4, y=8, w=800, h=600, output="DP-1")
+    win = _bare_window(app, windows=[window], kind=1)
+    win.outputs = [types.SimpleNamespace(name="DP-1")]
+
+    class Manager(_FakeMirrorManager):
+        def __init__(self):
+            super().__init__([_FakeStatusResult()])
+            self.calls = []
+
+        def start(self, *args, **kwargs):
+            self.calls.append((args, kwargs))
+            return types.SimpleNamespace(warning=None)
+
+    manager = Manager()
+    win.mirror_manager = manager
+    win.backend = types.SimpleNamespace(name="niri")
+    win.source_dropdown = _Dropdown(0)
+    win.mode_dropdown = _Dropdown(0)
+    win._refresh_status = lambda: None
+    win._on_start_stop()
+    assert manager.calls[0][1]["source_kind"] == "window"
+    assert manager.calls[0][1]["available_windows"] == [window]
+    assert manager.calls[0][0][1] == "42"
+
+
+def test_preview_uses_region_for_window(monkeypatch):
+    app = _load_app_with_fake_gtk(monkeypatch)
+    from waymirror.models import Window
+
+    window = Window("42", w=800, h=600)
+    win = _bare_window(app, windows=[window], kind=1)
+    win.outputs = [types.SimpleNamespace(name="DP-1")]
+    win.mirror_manager = types.SimpleNamespace(status=lambda: _FakeStatusResult(active=True, session=types.SimpleNamespace(source_kind="window", source="42", region="4,8 800x600")))
+    calls = []
+    win.preview_manager = types.SimpleNamespace(capture=lambda name, **kwargs: calls.append((name, kwargs)) or None, errors={})
+    class ImmediateThread:
+        def __init__(self, target, daemon):
+            self.target = target
+        def start(self):
+            self.target()
+    monkeypatch.setattr(app.threading, "Thread", ImmediateThread)
+    win._schedule_preview_refresh()
+    assert ("window:42", {"region": "4,8 800x600"}) in calls
