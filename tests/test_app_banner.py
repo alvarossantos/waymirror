@@ -418,6 +418,22 @@ def test_kind_dropdown_switches_source_list(monkeypatch):
     assert len(win.flow.children) == 1
 
 
+def test_target_switches_to_other_output_when_source_matches(monkeypatch):
+    app = _load_app_with_fake_gtk(monkeypatch)
+    from waymirror.models import Output
+
+    win = _bare_window(app, outputs=[Output("HDMI-A-1"), Output("eDP-2")])
+    win.source_dropdown.set_selected(0)
+    win.target_dropdown.set_selected(0)
+    win._ensure_distinct_target()
+    assert win._selected_target() == "eDP-2"
+
+    win.source_dropdown.set_selected(1)
+    win.target_dropdown.set_selected(1)
+    win._ensure_distinct_target()
+    assert win._selected_target() == "HDMI-A-1"
+
+
 def test_gui_window_discovery_failure_nonfatal(monkeypatch):
     app = _load_app_with_fake_gtk(monkeypatch)
     from waymirror.models import Output
