@@ -8,7 +8,7 @@ import subprocess
 from collections.abc import Callable, Mapping
 from typing import Protocol
 
-from waymirror.models import Output
+from waymirror.models import Output, Window
 
 
 class BackendError(RuntimeError):
@@ -25,6 +25,8 @@ class Backend(Protocol):
     name: str
 
     def list_outputs(self) -> list[Output]: ...
+
+    def list_windows(self) -> list[Window]: ...
 
 
 RunFunc = Callable[[list[str]], str]

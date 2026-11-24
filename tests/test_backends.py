@@ -8,6 +8,8 @@ import pytest
 from waymirror.backends.base import BackendError, NoBackendError, detect_backend
 from waymirror.backends.niri import parse_niri_outputs
 from waymirror.backends.umbriel import parse_umbriel_outputs
+from waymirror.backends.niri import parse_niri_windows
+from waymirror.backends.umbriel import parse_umbriel_windows
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -197,3 +199,54 @@ def test_umbriel_parser_defensive_unknown_fields():
     assert outs[0].name == "DP-2"
     assert outs[0].refresh_hz == 50.0
     assert outs[0].position_x == 1
+
+
+def test_parse_umbriel_windows_fixture():
+    windows = parse_umbriel_windows((FIXTURES / "umbriel_windows.json").read_text())
+    assert len(windows) == 2
+    window = next(w for w in windows if w.app_id == "firefox")
+    assert window.id == "42"
+    assert (window.x, window.y, window.w, window.h) == (-1903, 10, 800, 600)
+    assert window.output == "HDMI-A-1"
+    assert window.visible is True
+    assert window.minimized is False
+
+
+def test_parse_niri_windows_nested_geometry():
+    windows = parse_niri_windows((FIXTURES / "niri_windows.json").read_text())
+    assert len(windows) == 1
+    assert windows[0].id == "7"
+    assert windows[0].app_id == "org.example.App"
+    assert (windows[0].x, windows[0].y, windows[0].w, windows[0].h) == (-20, 30, 400, 300)
+    assert windows[0].output == "eDP-1"
+
+
+def test_parse_niri_windows_unknown_shape():
+    assert parse_niri_windows('{"unexpected": 1}') == []
+
+
+def test_parse_windows_discards_invalid_or_incomplete_geometry():
+    data = json.dumps([
+        {"id": 1, "x": "bad", "y": 0, "w": 100, "h": 100},
+        {"id": 2, "x": 0, "y": 0, "width": 100},
+    ])
+    assert parse_umbriel_windows(data) == []
+
+
+def test_list_windows_implemented_by_backends():
+    calls = []
+
+    def fake_run(cmd):
+        calls.append(cmd)
+        if cmd == ["umbriel", "windows", "--json"]:
+            return (FIXTURES / "umbriel_windows.json").read_text()
+        if cmd == ["niri", "msg", "--json", "windows"]:
+            return (FIXTURES / "niri_windows.json").read_text()
+        raise AssertionError(cmd)
+
+    from waymirror.backends.niri import NiriBackend
+    from waymirror.backends.umbriel import UmbrielBackend
+
+    assert len(UmbrielBackend(run=fake_run).list_windows()) == 2
+    assert len(NiriBackend(run=fake_run).list_windows()) == 1
+    assert calls == [["umbriel", "windows", "--json"], ["niri", "msg", "--json", "windows"]]

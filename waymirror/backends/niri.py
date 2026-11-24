@@ -3,14 +3,28 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Callable
 from typing import Any
 
-from waymirror.models import Output
+from waymirror.models import Output, Window
 
 from .base import BackendError
 
 RunFunc = Callable[[list[str]], str]
+logger = logging.getLogger(__name__)
+
+
+def parse_niri_windows(text: str) -> list[Window]:
+    """Parse niri's window JSON, accepting the documented wrapper or list."""
+    from .umbriel import _parse_window_items
+
+    try:
+        payload = json.loads(text)
+    except (json.JSONDecodeError, TypeError) as exc:
+        logger.warning("invalid niri windows JSON: %s", exc)
+        return []
+    return _parse_window_items(payload, "niri")
 
 
 def _as_int(value: Any, default: int = 0) -> int:
@@ -143,3 +157,14 @@ class NiriBackend:
     def list_outputs(self) -> list[Output]:
         text = self._run(["niri", "msg", "--json", "outputs"])
         return parse_niri_outputs(text)
+
+    def list_windows(self) -> list[Window]:
+        try:
+            text = self._run(["niri", "msg", "--json", "windows"])
+        except BackendError as exc:
+            logger.warning("failed to list niri windows: %s", exc)
+            return []
+        if not text.strip():
+            logger.warning("empty niri windows response")
+            return []
+        return parse_niri_windows(text)

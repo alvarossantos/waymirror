@@ -1,0 +1,12 @@
+{
+  "windows": [
+    {
+      "id": 7,
+      "app_id": "org.example.App",
+      "title": "Example",
+      "geometry": {"x": -20, "y": 30, "width": 400, "height": 300, "output": "eDP-1"},
+      "visible": true,
+      "minimized": false
+    }
+  ]
+}
