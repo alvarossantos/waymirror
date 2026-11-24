@@ -49,7 +49,12 @@ def _run_recorder(windows: str, calls: list[list[str]], fail: bool = False):
         if cmd == ["umbriel", "windows", "--json"]:
             return windows
         if cmd == ["umbriel", "workspaces", "--json"]:
-            return json.dumps([{"output": "eDP-2", "active": True, "name": "3"}])
+            return json.dumps(
+                [
+                    {"output": "eDP-2", "active": True, "id": "eDP-2:4", "name": "1"},
+                    {"output": "eDP-2", "active": False, "id": "eDP-2:11", "name": "3"},
+                ]
+            )
         return ""
 
     return run
@@ -60,7 +65,9 @@ def test_reveal_same_output_only_switches_workspace():
     run = _run_recorder(_windows_payload(), calls)
 
     assert reveal_mirror_window("umbriel", 4242, "eDP-2", run=run) is None
-    assert calls == [["umbriel", "windows", "--json"], ["umbriel", "msg", "workspace-switch", "eDP-2:11", "--output", "eDP-2"]]
+    assert [c for c in calls if c[1] == "msg"] == [
+        ["umbriel", "msg", "workspace-switch", "3", "--output", "eDP-2"]
+    ]
 
 
 def test_reveal_other_output_focuses_moves_then_switches():
@@ -79,10 +86,32 @@ def test_reveal_other_output_focuses_moves_then_switches():
     run = _run_recorder(payload, calls)
 
     assert reveal_mirror_window("umbriel", 4242, "eDP-2", run=run) is None
-    assert [c[:3] for c in calls[1:]] == [
-        ["umbriel", "msg", "window-focus"],
-        ["umbriel", "msg", "window-move-to-workspace"],
-        ["umbriel", "msg", "workspace-switch"],
+    ipc = [c for c in calls if c[1] == "msg"]
+    assert ipc == [
+        ["umbriel", "msg", "window-focus", "w-1"],
+        ["umbriel", "msg", "window-move-to-workspace", "1", "--output", "eDP-2"],
+        ["umbriel", "msg", "workspace-switch", "1", "--output", "eDP-2"],
+    ]
+
+
+def test_reveal_converts_window_workspace_id_to_ipc_name():
+    calls: list[list[str]] = []
+    payload = json.dumps(
+        [
+            {
+                "id": "w-1",
+                "pid": 4242,
+                "app_id": "at.yrlf.wl_mirror",
+                "output": "eDP-2",
+                "workspace": "eDP-2:4",
+            }
+        ]
+    )
+    run = _run_recorder(payload, calls)
+
+    assert reveal_mirror_window("umbriel", 4242, "eDP-2", run=run) is None
+    assert [c for c in calls if c[1] == "msg"] == [
+        ["umbriel", "msg", "workspace-switch", "1", "--output", "eDP-2"]
     ]
 
 

@@ -78,6 +78,21 @@ def _active_workspace(backend: str, target: str, run: RunFunc) -> str:
     return ""
 
 
+def _workspace_ref(backend: str, workspace: str, target: str, run: RunFunc) -> str:
+    """Converte o ID canônico do umbriel no nome exigido pelo IPC."""
+    try:
+        payload = json.loads(run(_workspaces_cmd(backend)))
+    except (OSError, ValueError, TypeError):
+        return workspace
+    items = payload if isinstance(payload, list) else payload.get("workspaces", [])
+    if not isinstance(items, list):
+        return workspace
+    for item in items:
+        if isinstance(item, dict) and str(item.get("id", "")) == workspace:
+            return str(item.get("name") or workspace)
+    return workspace
+
+
 def _commands(backend: str, window_id: str, workspace: str, target: str) -> list[list[str]]:
     if backend == "umbriel":
         return [
@@ -119,12 +134,17 @@ def reveal_mirror_window(
     if window is None:
         return f"warn: mirror window not found for pid {pid}"
 
-    workspace = window.get("workspace") or _active_workspace(backend, target, runner)
+    same_output = window.get("output") == target
+    if same_output:
+        workspace = window.get("workspace") or _active_workspace(backend, target, runner)
+        workspace = _workspace_ref(backend, workspace, target, runner)
+    else:
+        workspace = _active_workspace(backend, target, runner) or window.get("workspace") or ""
     if not workspace:
         return f"warn: no workspace available on {target}"
 
     commands = _commands(backend, window["id"], workspace, target)
-    if window.get("output") == target:
+    if same_output:
         commands.pop(0)
         commands.pop(0)
 
