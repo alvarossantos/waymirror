@@ -33,14 +33,14 @@ class FakeRunner:
         return FakeProc(pid=self.pid)
 
 
-def make_manager(tmp_path, runner=None, pid_alive=None, now=None, killer=None, waiter=None):
+def make_manager(tmp_path, runner=None, pid_alive=None, now=None, killer=None, waiter=None, revealer=None):
     store = StateStore(tmp_path / "state.json")
     runner = runner or FakeRunner()
     pid_alive = pid_alive or (lambda pid: True)
     now = now or (lambda: "2026-01-01T00:00:00Z")
     killer = killer or (lambda pid, sig: None)
     waiter = waiter or (lambda pid: True)
-    return MirrorManager(store, runner=runner, pid_alive=pid_alive, now=now, killer=killer, waiter=waiter), store, runner
+    return MirrorManager(store, runner=runner, pid_alive=pid_alive, now=now, killer=killer, waiter=waiter, revealer=revealer), store, runner
 
 
 def test_build_fullscreen_cmd():
@@ -104,6 +104,55 @@ def test_start_different_config_stops_previous(tmp_path):
     assert killed == [(12345, signal.SIGTERM)]
     assert store.load().pid == 54321
     assert store.load().mode == "fullscreen"
+
+
+def test_start_fullscreen_reveals_mirror_window(tmp_path):
+    calls = []
+    runner = FakeRunner(pid=4242)
+    mgr, store, _ = make_manager(
+        tmp_path,
+        runner=runner,
+        revealer=lambda backend, pid, target: calls.append((backend, pid, target)) or "warn: reveal failed",
+    )
+
+    res = mgr.start("umbriel", "HDMI-A-1", "fullscreen", "eDP-2", available_outputs=["eDP-2", "HDMI-A-1"])
+
+    assert res.action == "started"
+    assert calls == [("umbriel", 4242, "eDP-2")]
+    assert res.warning == "warn: reveal failed"
+    assert store.load().pid == 4242
+
+
+def test_start_window_does_not_reveal(tmp_path):
+    calls = []
+    mgr, _, _ = make_manager(
+        tmp_path,
+        revealer=lambda backend, pid, target: calls.append((backend, pid, target)),
+    )
+
+    res = mgr.start("umbriel", "eDP-2", "window", None, available_outputs=["eDP-2", "HDMI-A-1"])
+
+    assert res.action == "started"
+    assert calls == []
+    assert res.warning is None
+
+
+def test_start_fullscreen_joins_stale_and_reveal_warnings(tmp_path):
+    store = StateStore(tmp_path / "state.json")
+    store.save(MirrorSession("umbriel", "HDMI-A-1", "fullscreen", "eDP-2", 999999, "t"))
+    mgr = MirrorManager(
+        store,
+        runner=FakeRunner(pid=4242),
+        pid_alive=lambda pid: False,
+        revealer=lambda backend, pid, target: "warn: reveal failed",
+    )
+
+    res = mgr.start("umbriel", "HDMI-A-1", "fullscreen", "eDP-2", available_outputs=["eDP-2", "HDMI-A-1"])
+
+    assert res.action == "started"
+    assert "cleared stale session" in res.warning
+    assert "warn: reveal failed" in res.warning
+    assert res.warning == "cleared stale session for dead pid 999999; warn: reveal failed"
 
 
 def test_toggle_stops_same_config(tmp_path):
