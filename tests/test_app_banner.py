@@ -487,3 +487,30 @@ def test_preview_uses_region_for_window(monkeypatch):
     monkeypatch.setattr(app.threading, "Thread", ImmediateThread)
     win._schedule_preview_refresh()
     assert ("window:42", {"region": "4,8 800x600"}) in calls
+
+
+def test_preview_keeps_selected_window_when_other_session_active(monkeypatch):
+    app = _load_app_with_fake_gtk(monkeypatch)
+    from waymirror.models import Window
+
+    first = Window("A", w=800, h=600)
+    selected = Window("B", x=100, w=400, h=300)
+    win = _bare_window(app, windows=[first, selected], kind=1)
+    win.source_dropdown.set_selected(1)
+    win.outputs = []
+    win.mirror_manager = types.SimpleNamespace(status=lambda: _FakeStatusResult(
+        active=True,
+        session=types.SimpleNamespace(source_kind="window", source="A", region="0,0 800x600"),
+    ))
+    calls = []
+    win.preview_manager = types.SimpleNamespace(capture=lambda name, **kwargs: calls.append((name, kwargs)), errors={})
+
+    class ImmediateThread:
+        def __init__(self, target, daemon):
+            self.target = target
+        def start(self):
+            self.target()
+
+    monkeypatch.setattr(app.threading, "Thread", ImmediateThread)
+    win._schedule_preview_refresh()
+    assert calls == [("window:B", {"region": "100,0 400x300"})]

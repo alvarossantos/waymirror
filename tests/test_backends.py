@@ -10,8 +10,17 @@ from waymirror.backends.niri import parse_niri_outputs
 from waymirror.backends.umbriel import parse_umbriel_outputs
 from waymirror.backends.niri import parse_niri_windows
 from waymirror.backends.umbriel import parse_umbriel_windows
+from waymirror.backends._windows import _parse_window_items
 
 FIXTURES = Path(__file__).parent / "fixtures"
+
+
+def test_shared_window_item_parser_keeps_negative_geometry_and_discards_invalid():
+    windows = _parse_window_items({"windows": [
+        {"id": "ok", "geometry": {"x": -20, "y": 5, "width": 300, "height": 200, "output": "DP-1"}},
+        {"id": "bad", "x": 0, "y": 0, "w": "nope", "h": 20},
+    ]}, "test")
+    assert [(window.id, window.x, window.w, window.output) for window in windows] == [("ok", -20, 300, "DP-1")]
 
 
 def test_parse_niri_fixture():

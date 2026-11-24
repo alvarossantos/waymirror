@@ -78,6 +78,18 @@ def test_start_same_config_idempotent(tmp_path):
     assert len(runner.calls) == 1
 
 
+def test_start_restarts_window_when_region_changes(tmp_path):
+    mgr, store, runner = make_manager(tmp_path)
+    original = Window("abc", x=10, y=20, w=300, h=200, output="HDMI-A-1")
+    moved = Window("abc", x=30, y=40, w=300, h=200, output="HDMI-A-1")
+    mgr.start("niri", "abc", "window", None, source_kind="window", available_windows=[original])
+    runner.pid = 54321
+    result = mgr.start("niri", "abc", "window", None, source_kind="window", available_windows=[moved])
+    assert result.action == "started"
+    assert runner.calls[-1] == ["wl-mirror", "-r", "30,40 300x200 HDMI-A-1"]
+    assert store.load().region == "30,40 300x200 HDMI-A-1"
+
+
 def test_start_different_config_stops_previous(tmp_path):
     killed = []
     mgr, store, runner = make_manager(

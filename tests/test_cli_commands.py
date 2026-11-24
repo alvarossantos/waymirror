@@ -306,7 +306,12 @@ def test_cli_list_windows_json(monkeypatch, capsys):
     assert payload == {"backend": "niri", "windows": [window.to_dict()]}
 
 
-@pytest.mark.parametrize("args", [["start", "--source", "x", "--window", "abc", "--mode", "window"], ["start", "--mode", "window"]])
+@pytest.mark.parametrize("args", [
+    ["start", "--source", "x", "--window", "abc", "--mode", "window"],
+    ["start", "--mode", "window"],
+    ["toggle", "--source", "x", "--window", "abc", "--mode", "window"],
+    ["toggle", "--mode", "window"],
+])
 def test_cli_window_flag_xor(args):
     assert cli.main(args) == 2
 

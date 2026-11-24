@@ -10,6 +10,7 @@ from typing import Any
 from waymirror.models import Output, Window
 
 from .base import BackendError
+from ._windows import _parse_window_items
 
 RunFunc = Callable[[list[str]], str]
 logger = logging.getLogger(__name__)
@@ -17,8 +18,6 @@ logger = logging.getLogger(__name__)
 
 def parse_niri_windows(text: str) -> list[Window]:
     """Parse niri's window JSON, accepting the documented wrapper or list."""
-    from .umbriel import _parse_window_items
-
     try:
         payload = json.loads(text)
     except (json.JSONDecodeError, TypeError) as exc:

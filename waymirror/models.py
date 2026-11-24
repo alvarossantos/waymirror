@@ -13,6 +13,18 @@ def _get(data: dict[str, Any], key: str, default: Any = None) -> Any:
     return data[key] if key in data else default
 
 
+def _as_bool(value: Any, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.casefold()
+        if normalized == "true":
+            return True
+        if normalized == "false":
+            return False
+    return default
+
+
 @dataclass
 class Window:
     """A compositor window and its current global geometry."""
@@ -53,8 +65,8 @@ class Window:
             y=int(_get(data, "y", 0)),
             w=int(_get(data, "w", 0)),
             h=int(_get(data, "h", 0)),
-            visible=bool(_get(data, "visible", True)),
-            minimized=bool(_get(data, "minimized", False)),
+            visible=_as_bool(_get(data, "visible", True), True),
+            minimized=_as_bool(_get(data, "minimized", False), False),
         )
 
     def wl_mirror_region(self) -> str:

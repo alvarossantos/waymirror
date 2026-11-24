@@ -176,7 +176,7 @@ waymirror toggle --source <out> --mode fullscreen --target <out>
 
 ## Fora da v1 / próximo
 
-- Espelhar janela específica (portal/pipewire, como Discord).
+- Captura isolada de janela via portal/pipewire (como Discord).
 - Múltiplas sessões.
 - Preview mais fluido/stream.
 - Hyprland e outros compositores.

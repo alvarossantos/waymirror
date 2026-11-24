@@ -132,6 +132,14 @@ def test_window_is_capturable():
     assert window.is_capturable() is False
 
 
+def test_window_from_dict_normalizes_boolean_strings():
+    window = Window.from_dict({"id": "abc", "visible": "FALSE", "minimized": "TrUe"})
+    assert window.visible is False
+    assert window.minimized is True
+    assert Window.from_dict({"id": "default"}).visible is True
+    assert Window.from_dict({"id": "default"}).minimized is False
+
+
 def test_session_from_dict_legacy_keys():
     session = MirrorSession.from_dict({
         "backend": "niri", "source": "eDP-2", "mode": "window", "target": None,

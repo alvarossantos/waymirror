@@ -64,21 +64,21 @@ class PreviewManager:
     def preview_path(self, output_name: str) -> Path:
         return self.previews_dir / f"{_safe_name(output_name)}.png"
 
-    def capture(self, output_name: str, *, region: str | None = None) -> Path | None:
-        """Capture an output or region preview; return None on failure."""
-        path = self.preview_path(output_name)
+    def capture(self, key: str, *, region: str | None = None) -> Path | None:
+        """Capture an output or window:<id> region preview; return None on failure."""
+        path = self.preview_path(key)
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             tmp = path.with_name(f".{path.name}.{os.getpid()}.{int(self.clock() * 1000)}.tmp")
             cmd = (
                 capture_grim_region_cmd(region, str(tmp))
                 if region is not None
-                else capture_grim_cmd(output_name, str(tmp))
+                else capture_grim_cmd(key, str(tmp))
             )
             try:
                 result = self.runner(cmd)
             except Exception as exc:  # noqa: BLE001 - capture failures must not escape GUI loop
-                self._record_error(output_name, exc)
+                self._record_error(key, exc)
                 self._cleanup_tmp(tmp)
                 return None
 
@@ -89,23 +89,23 @@ class PreviewManager:
                     stderr_text = stderr.decode("utf-8", errors="replace")
                 else:
                     stderr_text = str(stderr)
-                msg = f"grim failed for {output_name} with exit {returncode}"
+                msg = f"grim failed for {key} with exit {returncode}"
                 if stderr_text.strip():
                     msg += f": {stderr_text.strip()}"
-                self._record_error(output_name, msg)
+                self._record_error(key, msg)
                 self._cleanup_tmp(tmp)
                 return None
 
             if not tmp.exists():
-                self._record_error(output_name, f"grim did not create preview file for {output_name}")
+                self._record_error(key, f"grim did not create preview file for {key}")
                 self._cleanup_tmp(tmp)
                 return None
 
             os.replace(tmp, path)
-            self.errors.pop(output_name, None)
+            self.errors.pop(key, None)
             return path
         except Exception as exc:  # noqa: BLE001 - capture failures must not escape GUI loop
-            self._record_error(output_name, exc)
+            self._record_error(key, exc)
             return None
 
     def clear(self) -> None:

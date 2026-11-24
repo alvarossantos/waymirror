@@ -500,8 +500,6 @@ if _GTK_AVAILABLE:
                 session = status.session if status.active else None
             except Exception:
                 session = None
-            if session is not None and getattr(session, "source_kind", "output") == "window":
-                window = next((candidate for candidate in self.windows if candidate.id == session.source), window)
             window_region = self._window_region_for_preview(window, session) if window is not None else None
             preview_manager = self.preview_manager
 
