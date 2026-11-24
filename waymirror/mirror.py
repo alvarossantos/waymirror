@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .models import MirrorMode, MirrorSession, SourceKind, Window
+from .reveal import reveal_mirror_window
 from .state import StateStore
 
 
@@ -72,6 +73,7 @@ PidAlive = Callable[[int], bool]
 Now = Callable[[], str]
 Killer = Callable[[int, int], None]
 Waiter = Callable[[int], bool]
+Revealer = Callable[[str, int, str], str | None]
 
 
 def build_wl_mirror_cmd(
@@ -152,6 +154,7 @@ class MirrorManager:
         now: Now | None = None,
         killer: Killer | None = None,
         waiter: Waiter | Callable[[int], bool] | None = None,
+        revealer: Revealer | None = None,
     ) -> None:
         self.state_store = state_store
         self.runner = runner if runner is not None else _default_runner
@@ -160,6 +163,9 @@ class MirrorManager:
         self.killer = killer if killer is not None else _default_killer
         self.waiter = waiter if waiter is not None else (
             lambda pid: _default_waiter(pid, pid_alive=self.pid_alive)
+        )
+        self.revealer = revealer if revealer is not None else (
+            lambda backend, pid, target: reveal_mirror_window(backend, pid, target)
         )
 
     @contextmanager
@@ -303,7 +309,15 @@ class MirrorManager:
             region=region,
         )
         self.state_store.save(session)
-        return StartResult(action="started", session=session, warning=stale_warning)
+        warnings = [w for w in (stale_warning,) if w]
+        if mode == "fullscreen":
+            try:
+                reveal_warning = self.revealer(backend, pid, target or "")
+            except Exception as exc:  # noqa: BLE001 - falha de IPC nunca aborta o start
+                reveal_warning = f"warn: reveal failed: {exc}"
+            if reveal_warning:
+                warnings.append(reveal_warning)
+        return StartResult(action="started", session=session, warning="; ".join(warnings) or None)
 
     def stop(self) -> StopResult:
         with self._session_lock():

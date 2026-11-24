@@ -114,6 +114,11 @@ session signals first). Exit codes: `0` success, `2` usage error, `3` no support
 backend, `4` output not found, `5` execution failure (missing `wl-mirror`, failed
 stop, or an unexpected internal error).
 
+In fullscreen mode, waymirror reveals the `wl-mirror` window after spawn. If the
+compositor placed it on another output, the window is moved to a workspace on
+the target output; that workspace is then activated via niri/umbriel IPC. If the
+IPC call fails, mirroring stays active and the warning is shown in the CLI/GUI.
+
 Preview snapshots live under `$XDG_RUNTIME_DIR/waymirror/previews/` and are
 captured at roughly 2 fps while the GUI is visible: output previews use
 `grim -o <output>`, and window previews use `grim -g <region>`.
