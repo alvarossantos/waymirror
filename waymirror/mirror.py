@@ -12,7 +12,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
 
-from .models import MirrorMode, MirrorSession
+from .models import MirrorMode, MirrorSession, SourceKind, Window
 from .state import StateStore
 
 
@@ -74,7 +74,23 @@ Killer = Callable[[int, int], None]
 Waiter = Callable[[int], bool]
 
 
-def build_wl_mirror_cmd(source: str, mode: MirrorMode, target: str | None) -> list[str]:
+def build_wl_mirror_cmd(
+    source: str,
+    mode: MirrorMode,
+    target: str | None,
+    *,
+    source_kind: SourceKind = "output", region: str | None = None,
+) -> list[str]:
+    if source_kind == "window":
+        if not region:
+            raise MirrorValidationError("window source requires a region")
+        if mode == "fullscreen":
+            if not target:
+                raise MirrorValidationError("fullscreen mode requires --target")
+            return ["wl-mirror", "--fullscreen-output", target, "-r", region]
+        if mode == "window":
+            return ["wl-mirror", "-r", region]
+        raise MirrorValidationError(f"unsupported mode: {mode!r}")
     if mode == "fullscreen":
         if not target:
             raise MirrorValidationError("fullscreen mode requires --target")
@@ -182,6 +198,32 @@ class MirrorManager:
             if target == source:
                 raise MirrorValidationError("target must differ from source in fullscreen mode")
 
+    def _validate_request(
+        self,
+        source: str,
+        mode: MirrorMode,
+        target: str | None,
+        available_outputs: list[str] | None,
+        source_kind: SourceKind,
+        available_windows: list[Window] | None,
+    ) -> str | None:
+        if source_kind == "window":
+            window = next((w for w in (available_windows or []) if w.id == source), None)
+            if window is None:
+                raise OutputNotFoundError(f"source window not found: {source}")
+            if not window.is_capturable():
+                raise MirrorValidationError(f"window is not capturable: {source}")
+            if mode == "fullscreen":
+                if not target:
+                    raise MirrorValidationError("fullscreen mode requires --target")
+                if available_outputs is not None and target not in set(available_outputs):
+                    raise OutputNotFoundError(f"target output not found: {target}")
+                if target == window.output:
+                    raise MirrorValidationError("target must differ from source window output in fullscreen mode")
+            return window.wl_mirror_region()
+        self._validate_outputs(source, mode, target, available_outputs)
+        return None
+
     def _load_active(self) -> tuple[MirrorSession | None, str | None]:
         session = self.state_store.load()
         if session is None:
@@ -204,9 +246,19 @@ class MirrorManager:
         target: str | None,
         *,
         available_outputs: list[str] | None = None,
+        source_kind: SourceKind = "output",
+        available_windows: list[Window] | None = None,
     ) -> StartResult:
         with self._session_lock():
-            return self._start_locked(backend, source, mode, target, available_outputs=available_outputs)
+            return self._start_locked(
+                backend,
+                source,
+                mode,
+                target,
+                available_outputs=available_outputs,
+                source_kind=source_kind,
+                available_windows=available_windows,
+            )
 
     def _start_locked(
         self,
@@ -216,17 +268,19 @@ class MirrorManager:
         target: str | None,
         *,
         available_outputs: list[str] | None = None,
+        source_kind: SourceKind = "output",
+        available_windows: list[Window] | None = None,
     ) -> StartResult:
-        self._validate_outputs(source, mode, target, available_outputs)
+        region = self._validate_request(source, mode, target, available_outputs, source_kind, available_windows)
         active, stale_warning = self._load_active()
         if active is not None and active.same_config(
-            backend=backend, source=source, mode=mode, target=target
+            backend=backend, source=source, mode=mode, target=target, source_kind=source_kind, region=region
         ):
             return StartResult(action="already_running", session=active, warning=stale_warning)
         if active is not None:
             self._stop_active(active)
 
-        cmd = build_wl_mirror_cmd(source, mode, target)
+        cmd = build_wl_mirror_cmd(source, mode, target, source_kind=source_kind, region=region)
         try:
             proc = self.runner(cmd)
         except FileNotFoundError as exc:
@@ -245,6 +299,8 @@ class MirrorManager:
             target=target,
             pid=pid,
             started_at=self.now(),
+            source_kind=source_kind,
+            region=region,
         )
         self.state_store.save(session)
         return StartResult(action="started", session=session, warning=stale_warning)
@@ -282,9 +338,11 @@ class MirrorManager:
         target: str | None,
         *,
         available_outputs: list[str] | None = None,
+        source_kind: SourceKind = "output",
+        available_windows: list[Window] | None = None,
     ) -> StartResult | StopResult:
         with self._session_lock():
-            return self._toggle_locked(backend, source, mode, target, available_outputs=available_outputs)
+            return self._toggle_locked(backend, source, mode, target, available_outputs=available_outputs, source_kind=source_kind, available_windows=available_windows)
 
     def _toggle_locked(
         self,
@@ -294,16 +352,26 @@ class MirrorManager:
         target: str | None,
         *,
         available_outputs: list[str] | None = None,
+        source_kind: SourceKind = "output",
+        available_windows: list[Window] | None = None,
     ) -> StartResult | StopResult:
-        self._validate_outputs(source, mode, target, available_outputs)
+        region = self._validate_request(source, mode, target, available_outputs, source_kind, available_windows)
         active, stale_warning = self._load_active()
         if active is None:
-            return self._start_locked(backend, source, mode, target, available_outputs=available_outputs)
-        if active.same_config(backend=backend, source=source, mode=mode, target=target):
+            return self._start_locked(backend, source, mode, target, available_outputs=available_outputs, source_kind=source_kind, available_windows=available_windows)
+        if active.same_config(backend=backend, source=source, mode=mode, target=target, source_kind=source_kind, region=region):
             self._stop_active(active)
             return StopResult(action="stopped", session=None, warning=stale_warning)
         self._stop_active(active)
-        return self._start_locked(backend, source, mode, target, available_outputs=available_outputs)
+        return self._start_locked(
+            backend,
+            source,
+            mode,
+            target,
+            available_outputs=available_outputs,
+            source_kind=source_kind,
+            available_windows=available_windows,
+        )
 
     def _stop_active(self, session: MirrorSession) -> None:
         try:

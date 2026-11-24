@@ -19,7 +19,7 @@ from waymirror.mirror import (
     StopResult,
     WlMirrorMissingError,
 )
-from waymirror.models import MirrorSession, Output
+from waymirror.models import MirrorSession, Output, Window
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -27,8 +27,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 class FakeBackend:
     name = "niri"
 
-    def __init__(self, outputs=None, fail: Exception | None = None):
+    def __init__(self, outputs=None, fail: Exception | None = None, windows=None):
         self.outputs = outputs or []
+        self.windows = windows or []
         self.fail = fail
         self.list_calls = 0
 
@@ -37,6 +38,9 @@ class FakeBackend:
         if self.fail is not None:
             raise self.fail
         return list(self.outputs)
+
+    def list_windows(self):
+        return list(self.windows)
 
 
 class FakeManager:
@@ -47,8 +51,8 @@ class FakeManager:
         self.toggle_result = toggle_result
         self.calls = []
 
-    def start(self, backend, source, mode, target, *, available_outputs=None):
-        self.calls.append(("start", backend, source, mode, target, available_outputs))
+    def start(self, backend, source, mode, target, *, available_outputs=None, source_kind="output", available_windows=None):
+        self.calls.append(("start", backend, source, mode, target, available_outputs, source_kind, available_windows))
         if isinstance(self.start_result, Exception):
             raise self.start_result
         return self.start_result
@@ -65,8 +69,8 @@ class FakeManager:
             raise self.status_result
         return self.status_result
 
-    def toggle(self, backend, source, mode, target, *, available_outputs=None):
-        self.calls.append(("toggle", backend, source, mode, target, available_outputs))
+    def toggle(self, backend, source, mode, target, *, available_outputs=None, source_kind="output", available_windows=None):
+        self.calls.append(("toggle", backend, source, mode, target, available_outputs, source_kind, available_windows))
         if isinstance(self.toggle_result, Exception):
             raise self.toggle_result
         return self.toggle_result
@@ -171,7 +175,7 @@ def test_start_passes_available_outputs_and_backend(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert rc == 0
     assert manager.calls == [
-        ("start", "niri", "eDP-2", "window", None, ["eDP-2", "HDMI-A-1"])
+        ("start", "niri", "eDP-2", "window", None, ["eDP-2", "HDMI-A-1"], "output", None)
     ]
     assert "started" in out.lower() or "eDP-2" in out
 
@@ -187,7 +191,7 @@ def test_toggle_passes_available_outputs(monkeypatch):
     ])
     assert rc == 0
     assert manager.calls == [
-        ("toggle", "niri", "eDP-2", "fullscreen", "HDMI-A-1", ["eDP-2", "HDMI-A-1"])
+        ("toggle", "niri", "eDP-2", "fullscreen", "HDMI-A-1", ["eDP-2", "HDMI-A-1"], "output", None)
     ]
 
 
@@ -290,3 +294,44 @@ def test_status_reports_inactive_when_no_state_file(monkeypatch, capsys):
     out = capsys.readouterr().out.lower()
     assert rc == 0
     assert "inactive" in out or "not running" in out
+
+
+def test_cli_list_windows_json(monkeypatch, capsys):
+    window = Window(id="abc", app_id="app", title="Title", output="HDMI-A-1", x=1, y=2, w=300, h=200)
+    backend = FakeBackend(windows=[window])
+    install_fake_runtime(monkeypatch, backend=backend)
+    rc = cli.main(["list", "windows", "--json"])
+    payload = json.loads(capsys.readouterr().out)
+    assert rc == 0
+    assert payload == {"backend": "niri", "windows": [window.to_dict()]}
+
+
+@pytest.mark.parametrize("args", [["start", "--source", "x", "--window", "abc", "--mode", "window"], ["start", "--mode", "window"]])
+def test_cli_window_flag_xor(args):
+    assert cli.main(args) == 2
+
+
+def test_status_json_window_session(monkeypatch, capsys):
+    session = MirrorSession("niri", "abc", "window", None, 123, "t", source_kind="window", region="1,2 300x200 HDMI-A-1")
+    install_fake_runtime(monkeypatch, manager=FakeManager(status_result=StatusResult(active=True, session=session)))
+    assert cli.main(["status", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["session"]["source_kind"] == "window"
+
+
+def test_start_window_passes_windows_to_manager(monkeypatch):
+    window = Window(id="abc", output="HDMI-A-1", w=300, h=200)
+    backend = FakeBackend(outputs=[Output(name="HDMI-A-1")], windows=[window])
+    manager = FakeManager(start_result=StartResult(action="started", session=None))
+    install_fake_runtime(monkeypatch, backend=backend, manager=manager)
+    assert cli.main(["start", "--window", "abc", "--mode", "window"]) == 0
+    assert manager.calls == [("start", "niri", "abc", "window", None, ["HDMI-A-1"], "window", [window])]
+
+
+def test_window_lookup_errors_map_to_exit_codes(monkeypatch):
+    backend = FakeBackend(windows=[])
+    manager = FakeManager(start_result=OutputNotFoundError("source window not found: missing"))
+    install_fake_runtime(monkeypatch, backend=backend, manager=manager)
+    assert cli.main(["start", "--window", "missing", "--mode", "window"]) == 4
+
+    manager.start_result = MirrorValidationError("window is not capturable")
+    assert cli.main(["start", "--window", "hidden", "--mode", "window"]) == 2

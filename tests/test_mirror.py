@@ -7,8 +7,8 @@ from dataclasses import dataclass
 
 import pytest
 
-from waymirror.mirror import MirrorManager, MirrorStopError, WlMirrorMissingError, build_wl_mirror_cmd
-from waymirror.models import MirrorSession
+from waymirror.mirror import MirrorManager, MirrorStopError, WlMirrorMissingError, MirrorValidationError, OutputNotFoundError, build_wl_mirror_cmd
+from waymirror.models import MirrorSession, Window
 from waymirror.state import StateStore
 
 
@@ -226,3 +226,40 @@ def test_default_waiter_honors_injected_pid_alive(tmp_path):
 
     with pytest.raises(MirrorStopError):
         mgr.stop()
+
+
+def test_build_cmd_window_region():
+    assert build_wl_mirror_cmd("ignored", "window", None, source_kind="window", region="10,20 300x200 HDMI-A-1") == ["wl-mirror", "-r", "10,20 300x200 HDMI-A-1"]
+    assert build_wl_mirror_cmd("ignored", "fullscreen", "eDP-2", source_kind="window", region="10,20 300x200 HDMI-A-1") == ["wl-mirror", "--fullscreen-output", "eDP-2", "-r", "10,20 300x200 HDMI-A-1"]
+
+
+def test_build_cmd_output_unchanged():
+    assert build_wl_mirror_cmd("eDP-2", "window", None) == ["wl-mirror", "eDP-2"]
+    assert build_wl_mirror_cmd("eDP-2", "fullscreen", "HDMI-A-1") == ["wl-mirror", "--fullscreen-output", "HDMI-A-1", "eDP-2"]
+
+
+def test_window_source_not_validated_as_output(tmp_path):
+    mgr, store, runner = make_manager(tmp_path)
+    window = Window(id="abc", output="HDMI-A-1", x=10, y=20, w=300, h=200)
+    res = mgr.start("niri", "abc", "window", None, available_outputs=["eDP-2", "HDMI-A-1"], source_kind="window", available_windows=[window])
+    assert res.action == "started"
+    assert runner.calls == [["wl-mirror", "-r", "10,20 300x200 HDMI-A-1"]]
+    assert store.load().source_kind == "window"
+
+
+def test_window_missing_exit_4(tmp_path):
+    mgr, _, _ = make_manager(tmp_path)
+    with pytest.raises(OutputNotFoundError):
+        mgr.start("niri", "abc", "window", None, source_kind="window", available_windows=[])
+
+
+def test_start_rejects_hidden_window(tmp_path):
+    mgr, _, _ = make_manager(tmp_path)
+    with pytest.raises(MirrorValidationError):
+        mgr.start("niri", "abc", "window", None, source_kind="window", available_windows=[Window(id="abc", output="HDMI-A-1", w=300, h=200, minimized=True)])
+
+
+def test_fullscreen_window_target_must_differ_from_source_output(tmp_path):
+    mgr, _, _ = make_manager(tmp_path)
+    with pytest.raises(MirrorValidationError):
+        mgr.start("niri", "abc", "fullscreen", "HDMI-A-1", available_outputs=["eDP-2", "HDMI-A-1"], source_kind="window", available_windows=[Window(id="abc", output="HDMI-A-1", w=300, h=200)])
