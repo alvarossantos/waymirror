@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from waymirror.preview import capture_grim_cmd, PreviewManager
+from waymirror.preview import capture_grim_cmd, capture_grim_region_cmd, PreviewManager
 
 
 @dataclass
@@ -18,6 +18,45 @@ def failing_runner(cmd):
 
 def test_grim_cmd_uses_output_name():
     assert capture_grim_cmd('HDMI-A-1','/tmp/x.png') == ['grim','-o','HDMI-A-1','/tmp/x.png']
+
+
+def test_capture_grim_region_cmd():
+    assert capture_grim_region_cmd("10,20 300x200", "/tmp/p.png") == [
+        "grim", "-g", "10,20 300x200", "/tmp/p.png"
+    ]
+
+
+def test_capture_window_key(tmp_path):
+    calls = []
+
+    def runner(cmd):
+        calls.append(list(cmd))
+        from pathlib import Path
+
+        Path(cmd[-1]).write_bytes(b"pngdata")
+        return FakeResult(returncode=0)
+
+    mgr = PreviewManager(tmp_path, runner=runner)
+    mgr.errors["window:abc"] = "previous failure"
+    path = mgr.capture("window:abc", region="10,20 300x200")
+
+    assert path == tmp_path / "waymirror" / "previews" / "window_abc.png"
+    assert path.read_bytes() == b"pngdata"
+    assert calls[0][:3] == ["grim", "-g", "10,20 300x200"]
+    assert "window:abc" not in mgr.errors
+
+    mgr.capture("eDP-2")
+    assert calls[1][:3] == ["grim", "-o", "eDP-2"]
+
+
+def test_capture_region_failure_is_nonfatal(tmp_path):
+    def runner(cmd):
+        return FakeResult(returncode=1, stderr=b"bad region")
+
+    mgr = PreviewManager(tmp_path, runner=runner)
+    assert mgr.capture("window:abc", region="10,20 300x200") is None
+    assert "window:abc" in mgr.errors
+    assert "exit 1" in mgr.errors["window:abc"]
 
 
 def test_capture_failure_returns_none(tmp_path):
