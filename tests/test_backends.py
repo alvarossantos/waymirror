@@ -221,8 +221,41 @@ def test_parse_niri_windows_nested_geometry():
     assert windows[0].output == "eDP-1"
 
 
-def test_parse_niri_windows_unknown_shape():
-    assert parse_niri_windows('{"unexpected": 1}') == []
+@pytest.mark.parametrize(
+    ("backend", "parser", "text", "warning"),
+    [
+        ("niri", parse_niri_windows, '{"unexpected": 1}', "unsupported niri windows JSON shape"),
+        ("umbriel", parse_umbriel_windows, '{"unexpected": 1}', "unsupported umbriel windows JSON shape"),
+        ("niri", parse_niri_windows, "not json", "invalid niri windows JSON"),
+        ("umbriel", parse_umbriel_windows, "not json", "invalid umbriel windows JSON"),
+    ],
+)
+def test_window_parser_nonfatal_json_logs_warning(backend, parser, text, warning, caplog):
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger=f"waymirror.backends.{backend}"):
+        assert parser(text) == []
+    assert warning in caplog.text
+
+
+@pytest.mark.parametrize("backend", ["umbriel", "niri"])
+@pytest.mark.parametrize("response", ["", "not json", BackendError("runner failed")])
+def test_list_windows_nonfatal_runner_responses(backend, response):
+    def fake_run(cmd):
+        if isinstance(response, BackendError):
+            raise response
+        return response
+
+    if backend == "umbriel":
+        from waymirror.backends.umbriel import UmbrielBackend
+
+        instance = UmbrielBackend(run=fake_run)
+    else:
+        from waymirror.backends.niri import NiriBackend
+
+        instance = NiriBackend(run=fake_run)
+
+    assert instance.list_windows() == []
 
 
 def test_parse_windows_discards_invalid_or_incomplete_geometry():
