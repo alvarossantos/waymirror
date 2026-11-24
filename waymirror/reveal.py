@@ -30,6 +30,35 @@ def _window_cmd(backend: str) -> list[str]:
     return ["niri", "msg", "--json", "windows"]
 
 
+def _workspaces_cmd(backend: str) -> list[str]:
+    if backend == "umbriel":
+        return ["umbriel", "workspaces", "--json"]
+    return ["niri", "msg", "--json", "workspaces"]
+
+
+def _load_workspaces(backend: str, run: RunFunc) -> list[dict[str, Any]]:
+    try:
+        payload = json.loads(run(_workspaces_cmd(backend)))
+    except (OSError, ValueError, TypeError) as exc:
+        logger.warning("failed to list %s workspaces: %s", backend, exc)
+        return []
+    items = payload if isinstance(payload, list) else (
+        payload.get("workspaces", []) if isinstance(payload, dict) else []
+    )
+    return [i for i in items if isinstance(i, dict)] if isinstance(items, list) else []
+
+
+def _workspace_ref(backend: str, workspace: str, workspaces: list[dict[str, Any]]) -> str:
+    """Referência aceita pelo IPC: nome, ou índice no niri."""
+    for item in workspaces:
+        if str(item.get("id", "")) != workspace:
+            continue
+        if item.get("name"):
+            return str(item["name"])
+        return str(item.get("idx") or workspace) if backend == "niri" else workspace
+    return workspace
+
+
 def _is_mirror_window(item: dict[str, Any]) -> bool:
     return str(item.get("app_id", item.get("app-id", ""))) == MIRROR_APP_ID
 
@@ -44,53 +73,31 @@ def find_mirror_window(backend: str, pid: int, run: RunFunc) -> dict[str, Any] |
 
     mirrors = [item for item in items if _is_mirror_window(item)]
     item = next((candidate for candidate in mirrors if candidate.get("pid") == pid), None)
-    if item is None:
-        item = next(iter(mirrors), None)
+    if item is None and len(mirrors) == 1:
+        item = mirrors[0]
     if item is None:
         return None
 
-    return {
-        "id": str(item.get("id", "")),
-        "output": str(item.get("output", "")),
-        "workspace": str(item.get("workspace", "")),
-    }
+    output = str(item.get("output") or "")
+    workspace = str(item.get("workspace") or "")
+    if backend == "niri":
+        # niri Window tem workspace_id, não output/workspace; deriva da tabela.
+        workspaces = _load_workspaces(backend, run)
+        ws_id = str(item.get("workspace_id", ""))
+        match = next((w for w in workspaces if str(w.get("id", "")) == ws_id), None)
+        if match is not None:
+            output = output or str(match.get("output") or "")
+            workspace = _workspace_ref(backend, ws_id, workspaces)
+
+    return {"id": str(item.get("id", "")), "output": output, "workspace": workspace}
 
 
-def _workspaces_cmd(backend: str) -> list[str]:
-    if backend == "umbriel":
-        return ["umbriel", "workspaces", "--json"]
-    return ["niri", "msg", "--json", "workspaces"]
-
-
-def _active_workspace(backend: str, target: str, run: RunFunc) -> str:
-    try:
-        payload = json.loads(run(_workspaces_cmd(backend)))
-    except (OSError, ValueError, TypeError) as exc:
-        logger.warning("failed to list %s workspaces: %s", backend, exc)
-        return ""
-    items = payload if isinstance(payload, list) else payload.get("workspaces", [])
-    if not isinstance(items, list):
-        return ""
-    for item in items:
-        if not isinstance(item, dict) or item.get("output") != target or not item.get("active"):
+def _active_workspace(backend: str, target: str, workspaces: list[dict[str, Any]]) -> str:
+    for item in workspaces:
+        if item.get("output") != target or not (item.get("active") or item.get("is_active")):
             continue
-        return str(item.get("name") or item.get("id") or "")
+        return _workspace_ref(backend, str(item.get("id", "")), workspaces)
     return ""
-
-
-def _workspace_ref(backend: str, workspace: str, target: str, run: RunFunc) -> str:
-    """Converte o ID canônico do umbriel no nome exigido pelo IPC."""
-    try:
-        payload = json.loads(run(_workspaces_cmd(backend)))
-    except (OSError, ValueError, TypeError):
-        return workspace
-    items = payload if isinstance(payload, list) else payload.get("workspaces", [])
-    if not isinstance(items, list):
-        return workspace
-    for item in items:
-        if isinstance(item, dict) and str(item.get("id", "")) == workspace:
-            return str(item.get("name") or workspace)
-    return workspace
 
 
 def _commands(backend: str, window_id: str, workspace: str, target: str) -> list[list[str]]:
@@ -134,25 +141,27 @@ def reveal_mirror_window(
     if window is None:
         return f"warn: mirror window not found for pid {pid}"
 
+    workspaces = _load_workspaces(backend, runner)
+    if not workspaces:
+        return f"warn: no workspace data from {backend}"
     same_output = window.get("output") == target
     if same_output:
-        workspace = window.get("workspace") or _active_workspace(backend, target, runner)
-        workspace = _workspace_ref(backend, workspace, target, runner)
+        workspace = window.get("workspace") or _active_workspace(backend, target, workspaces)
+        workspace = _workspace_ref(backend, workspace, workspaces)
     else:
-        workspace = _active_workspace(backend, target, runner) or window.get("workspace") or ""
+        workspace = _active_workspace(backend, target, workspaces) or window.get("workspace") or ""
     if not workspace:
         return f"warn: no workspace available on {target}"
 
     commands = _commands(backend, window["id"], workspace, target)
     if same_output:
-        commands.pop(0)
-        commands.pop(0)
+        commands = commands[2:]
 
     warnings: list[str] = []
     for cmd in commands:
         try:
             runner(cmd)
-        except (OSError, ValueError, TypeError) as exc:
+        except Exception as exc:  # noqa: BLE001 - falha de IPC nunca aborta o start
             warnings.append(f"warn: {' '.join(cmd[:3])} failed: {exc}")
     return "; ".join(warnings) or None
 

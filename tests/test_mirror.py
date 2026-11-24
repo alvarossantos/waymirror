@@ -123,6 +123,20 @@ def test_start_fullscreen_reveals_mirror_window(tmp_path):
     assert store.load().pid == 4242
 
 
+def test_revealer_exception_does_not_abort_start(tmp_path):
+    mgr, store, _ = make_manager(
+        tmp_path,
+        runner=FakeRunner(pid=4242),
+        revealer=lambda backend, pid, target: (_ for _ in ()).throw(RuntimeError("ipc exploded")),
+    )
+
+    res = mgr.start("umbriel", "HDMI-A-1", "fullscreen", "eDP-2", available_outputs=["eDP-2", "HDMI-A-1"])
+
+    assert res.action == "started"
+    assert "ipc exploded" in res.warning
+    assert store.load().pid == 4242
+
+
 def test_start_window_does_not_reveal(tmp_path):
     calls = []
     mgr, _, _ = make_manager(

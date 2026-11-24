@@ -311,7 +311,10 @@ class MirrorManager:
         self.state_store.save(session)
         warnings = [w for w in (stale_warning,) if w]
         if mode == "fullscreen":
-            reveal_warning = self.revealer(backend, pid, target or "")
+            try:
+                reveal_warning = self.revealer(backend, pid, target or "")
+            except Exception as exc:  # noqa: BLE001 - falha de IPC nunca aborta o start
+                reveal_warning = f"warn: reveal failed: {exc}"
             if reveal_warning:
                 warnings.append(reveal_warning)
         return StartResult(action="started", session=session, warning="; ".join(warnings) or None)
