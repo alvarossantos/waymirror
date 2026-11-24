@@ -397,6 +397,7 @@ def _bare_window(app, *, outputs=(), windows=(), kind=0):
     win.backend_name = "niri"
     win._refresh_pending = False
     win._preview_inflight = False
+    win._closed = False
     return win
 
 
@@ -489,6 +490,70 @@ def test_preview_uses_region_for_window(monkeypatch):
     assert ("window:42", {"region": "4,8 800x600"}) in calls
 
 
+def test_preview_captures_every_capturable_window(monkeypatch):
+    app = _load_app_with_fake_gtk(monkeypatch)
+    from waymirror.models import Window
+
+    first = Window("A", x=0, y=0, w=800, h=600)
+    second = Window("B", x=100, y=0, w=400, h=300)
+    win = _bare_window(app, windows=[first, second], kind=1)
+    win.outputs = []
+    win.mirror_manager = types.SimpleNamespace(status=lambda: _FakeStatusResult())
+    calls = []
+    win.preview_manager = types.SimpleNamespace(capture=lambda name, **kwargs: calls.append((name, kwargs)), errors={})
+
+    class ImmediateThread:
+        def __init__(self, target, daemon):
+            self.target = target
+
+        def start(self):
+            self.target()
+
+    monkeypatch.setattr(app.threading, "Thread", ImmediateThread)
+    win._schedule_preview_refresh()
+    assert ("window:A", {"region": "0,0 800x600"}) in calls
+    assert ("window:B", {"region": "100,0 400x300"}) in calls
+
+
+def test_preview_uses_fresh_geometry_on_refresh(monkeypatch):
+    app = _load_app_with_fake_gtk(monkeypatch)
+    from waymirror.models import Window
+
+    stale = Window("A", x=0, y=0, w=800, h=600)
+    win = _bare_window(app, windows=[stale], kind=1)
+    win.outputs = []
+    win.get_mapped = lambda: True
+    win._refresh_status = lambda: None
+    win.backend = types.SimpleNamespace(list_windows=lambda: [Window("A", x=50, y=70, w=400, h=300)])
+    win.mirror_manager = types.SimpleNamespace(status=lambda: _FakeStatusResult())
+    calls = []
+    win.preview_manager = types.SimpleNamespace(capture=lambda name, **kwargs: calls.append((name, kwargs)), errors={})
+
+    class FakeCard:
+        meta = None
+
+        def update_meta(self, window):
+            self.meta = f"{window.w}x{window.h}"
+
+        def set_preview(self, path, error):
+            pass
+
+    card = FakeCard()
+    win.cards["window:A"] = card
+
+    class ImmediateThread:
+        def __init__(self, target, daemon):
+            self.target = target
+
+        def start(self):
+            self.target()
+
+    monkeypatch.setattr(app.threading, "Thread", ImmediateThread)
+    win._on_refresh_tick()
+    assert ("window:A", {"region": "50,70 400x300"}) in calls
+    assert card.meta == "400x300"
+
+
 def test_preview_keeps_selected_window_when_other_session_active(monkeypatch):
     app = _load_app_with_fake_gtk(monkeypatch)
     from waymirror.models import Window
@@ -513,4 +578,5 @@ def test_preview_keeps_selected_window_when_other_session_active(monkeypatch):
 
     monkeypatch.setattr(app.threading, "Thread", ImmediateThread)
     win._schedule_preview_refresh()
-    assert calls == [("window:B", {"region": "100,0 400x300"})]
+    assert ("window:B", {"region": "100,0 400x300"}) in calls
+    assert ("window:B", {"region": "0,0 800x600"}) not in calls

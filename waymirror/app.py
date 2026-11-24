@@ -168,6 +168,12 @@ if _GTK_AVAILABLE:
             self.error_label.set_text(error or "")
             self.error_label.set_visible(bool(error))
 
+        def update_meta(self, window: Window) -> None:
+            self.window = window
+            self.name_label.set_label(window.app_id or window.title or window.id)
+            self.title_label.set_label(window.title or " ")
+            self.meta_label.set_label(f"{window.w}x{window.h}")
+
 
     class WaymirrorWindow(Adw.ApplicationWindow):
         def __init__(
@@ -480,11 +486,36 @@ if _GTK_AVAILABLE:
                 GLib.source_remove(self._refresh_timer_id)
                 self._refresh_timer_id = None
 
+        def _refresh_window_geometry(self) -> None:
+            if self._selected_kind() != "window" or self.backend is None:
+                return
+            try:
+                fresh = [window for window in self.backend.list_windows() if window.is_capturable()]
+            except Exception:  # noqa: BLE001 - keep last known geometry on backend failure
+                return
+            fresh_by_id = {window.id: window for window in fresh}
+            if set(fresh_by_id) != {window.id for window in self.windows}:
+                self._load_sources()
+                return
+            for window in self.windows:
+                updated = fresh_by_id[window.id]
+                window.x = updated.x
+                window.y = updated.y
+                window.w = updated.w
+                window.h = updated.h
+                window.title = updated.title
+                window.app_id = updated.app_id
+                window.output = updated.output
+                card = self.cards.get(f"window:{window.id}")
+                if card is not None:
+                    card.update_meta(window)
+
         def _on_refresh_tick(self) -> bool:
             if self._closed or not self.get_mapped():
                 self._refresh_timer_id = None
                 return False
             self._refresh_status()
+            self._refresh_window_geometry()
             self._schedule_preview_refresh()
             return True
 
@@ -494,13 +525,13 @@ if _GTK_AVAILABLE:
             self._refresh_pending = True
             self._preview_inflight = True
             output_names = [o.name for o in self.outputs]
-            window = self._selected_window()
+            windows = list(self.windows) if self._selected_kind() == "window" else []
             try:
                 status = self.mirror_manager.status()
                 session = status.session if status.active else None
             except Exception:
                 session = None
-            window_region = self._window_region_for_preview(window, session) if window is not None else None
+            window_regions = {window.id: self._window_region_for_preview(window, session) for window in windows}
             preview_manager = self.preview_manager
 
             def worker() -> None:
@@ -513,10 +544,10 @@ if _GTK_AVAILABLE:
                         path = None
                         err = str(exc)
                     results[name] = (path, err)
-                if window is not None:
+                for window in windows:
                     name = f"window:{window.id}"
                     try:
-                        path = preview_manager.capture(name, region=window_region)
+                        path = preview_manager.capture(name, region=window_regions[window.id])
                         err = preview_manager.errors.get(name)
                     except Exception as exc:  # noqa: BLE001
                         path = None
